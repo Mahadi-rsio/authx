@@ -1,54 +1,52 @@
-import { useEffect } from "react";
-import { useContext } from "react";
-import { useState } from "react";
-import { createContext } from "react";
+import { useEffect, useState, createContext, useContext } from "react";
 
 const ThemeContext = createContext();
 
 function Theme({ children }) {
-  const isDarkMode = window.matchMedia("(prefers-color-scheme : dark)").matches;
+  // Initialize theme from localStorage or system preference
+  const [theme, setTheme] = useState(() => {
+    const savedTheme = localStorage.getItem("system_theme_of_auth_manager");
+    if (savedTheme) return savedTheme;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  });
 
-  const [theme, setTheme] = useState(isDarkMode ? "dark" : "light");
+  // Update theme in DOM and localStorage when theme changes
   useEffect(() => {
-    if (localStorage.getItem("system_theme_of_auth_manager")) {
-      document.documentElement.setAttribute(
-        "data-theme",
-        localStorage.getItem("system_theme_of_auth_manager"),
-      );
-    } else {
-      document.documentElement.setAttribute("data-theme", theme);
-    }
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("system_theme_of_auth_manager", theme);
   }, [theme]);
 
+  // Listen for system theme changes
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleSystemThemeChange = (e) => {
+      // Only update if no user preference is saved in localStorage
+      if (!localStorage.getItem("system_theme_of_auth_manager")) {
+        setTheme(e.matches ? "dark" : "light");
+      }
+    };
+
+    mediaQuery.addEventListener("change", handleSystemThemeChange);
+    return () =>
+      mediaQuery.removeEventListener("change", handleSystemThemeChange);
+  }, []);
+
+  // Toggle theme between light and dark
   const toggleTheme = () => {
-    if (theme === "dark") {
-      setTheme("light");
-      if (!localStorage.getItem("system_theme_of_auth_manager")) {
-        localStorage.setItem("system_theme_of_auth_manager", theme);
-      } else {
-        localStorage.removeItem("system_theme_of_auth_manager");
-        localStorage.setItem("system_theme_of_auth_manager", theme);
-      }
-    }
-    if (theme === "light") {
-      setTheme("dark");
-      if (!localStorage.getItem("system_theme_of_auth_manager")) {
-        localStorage.setItem("system_theme_of_auth_manager", theme);
-      } else {
-        localStorage.removeItem("system_theme_of_auth_manager");
-        localStorage.setItem("system_theme_of_auth_manager", theme);
-      }
-    }
+    setTheme((prevTheme) => {
+      const newTheme = prevTheme === "dark" ? "light" : "dark";
+      return newTheme;
+    });
   };
 
   return (
-    <ThemeContext.Provider value={{ toggleTheme }}>
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
       {children}
     </ThemeContext.Provider>
   );
 }
 
 export default Theme;
-
-//Hook for use theme handler
-export const useTheme = () => useContext(ThemeContext)
+export const useTheme = () => useContext(ThemeContext);

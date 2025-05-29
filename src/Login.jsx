@@ -2,30 +2,24 @@ import { useState, useEffect } from "react";
 import { useTheme } from "./Theme";
 import { BsMoon, BsSun } from "react-icons/bs";
 import { useGoogleLogin } from "@react-oauth/google";
+import GoogleSignInButton from "./GoogleButton";
 
 function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [currentFeatureIndex, setCurrentFeatureIndex] = useState(0);
   const { theme, toggleTheme } = useTheme();
-  const [username, setUsername] = useState('')
+  const [username, setUsername] = useState("");
 
   // ✅ Correct usage of useGoogleLogin
-  const login = useGoogleLogin({
-    onSuccess: (tokenResponse) => {
-      localStorage.setItem("google_token", JSON.stringify(tokenResponse));
-      
-      setIsLoading(false)
-    },
-    onError: () => {
-      console.error("Google login failed");
-    },
-    flow: "implicit",
-  });
 
   const features = [
     {
       icon: (
-        <svg className="w-7 h-7 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+        <svg
+          className="w-7 h-7 text-indigo-600"
+          fill="currentColor"
+          viewBox="0 0 20 20"
+        >
           <path d="M13 7H7v6h6V7zm-3 7a2 2 0 100-4 2 2 0 000 4zm7-7h-2v6h2V7zm-4 8H7a1 1 0 01-1-1v-1h6v1a1 1 0 01-1 1z" />
         </svg>
       ),
@@ -34,7 +28,11 @@ function Login() {
     },
     {
       icon: (
-        <svg className="w-7 h-7 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+        <svg
+          className="w-7 h-7 text-indigo-600"
+          fill="currentColor"
+          viewBox="0 0 20 20"
+        >
           <path d="M10 2a8 8 0 00-8 8c0 3.86 2.73 7.07 6.4 7.8a1 1 0 001.2-.8l.4-2a1 1 0 00-.6-1.1A4 4 0 016 10a4 4 0 018 0 4 4 0 01-3.4 3.9 1 1 0 00-.6 1.1l.4 2a1 1 0 001.2.8A8 8 0 0010 2z" />
         </svg>
       ),
@@ -43,7 +41,11 @@ function Login() {
     },
     {
       icon: (
-        <svg className="w-7 h-7 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+        <svg
+          className="w-7 h-7 text-indigo-600"
+          fill="currentColor"
+          viewBox="0 0 20 20"
+        >
           <path d="M10 2a8 8 0 00-8 8c0 4.42 3.58 8 8 8s8-3.58 8-8a8 8 0 00-8-8zm0 12l-4-4h3V6h2v4h3l-4 4z" />
         </svg>
       ),
@@ -87,10 +89,11 @@ function Login() {
           Join with Our Community
         </h1>
         <p className="mt-2 text-sm sm:text-base md:text-lg text-gray-600 dark:text-gray-300">
-          Collaborate with over 15,000 professionals and elevate your experience.
+          Collaborate with over 15,000 professionals and elevate your
+          experience.
         </p>
       </div>
-          <h>{username}</h>
+      <h>{username}</h>
       {/* Feature Highlight */}
       <div className="w-full max-w-full sm:max-w-sm md:max-w-md mx-auto mb-8 sm:mb-12 group">
         <div
@@ -109,36 +112,7 @@ function Login() {
         </div>
       </div>
 
-      {/* Google Sign-up Button */}
-      <div className="w-full max-w-full sm:max-w-sm md:max-w-md mx-auto animate-fade-in-up">
-        <button
-          id="google-signup"
-          className="relative w-full flex items-center justify-center bg-white dark:bg-gray-800 border border-gray-500 dark:border-gray-600 rounded-lg py-3 sm:py-3.5 shadow-md hover:shadow-lg hover:bg-indigo-50 dark:hover:bg-gray-700 hover:scale-105 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400"
-          tabIndex="0"
-          onClick={() => {
-            setIsLoading(true);
-            login();
-          }}
-          disabled={isLoading}
-          aria-label="Sign in with Google"
-        >
-          <img
-            src="https://www.svgrepo.com/show/355037/google.svg"
-            alt="Google Icon"
-            className="w-5 h-5 sm:w-6 sm:h-6 mr-2 sm:mr-3"
-          />
-          <span className="text-gray-900 dark:text-gray-100 font-inter font-medium text-sm sm:text-base">
-            Sign in with Google
-          </span>
-          {isLoading && (
-            <div
-              className="ml-2 sm:ml-3 border-t-2 border-indigo-500 border-solid rounded-full w-4 h-4 sm:w-5 sm:h-5 animate-spin"
-              aria-hidden="true"
-            ></div>
-          )}
-          <div className="absolute inset-0 bg-indigo-500 opacity-0 hover:opacity-10 rounded-lg transition-opacity duration-300"></div>
-        </button>
-      </div>
+      <GoogleSignInButton/>
 
       {/* Testimonial Carousel */}
       <div className="mt-8 sm:mt-12 w-full max-w-full sm:max-w-sm md:max-w-md mx-auto group animate-fade-in-up">
@@ -158,7 +132,10 @@ function Login() {
                 author: "Taylor, Marketing Lead",
               },
             ].map((testimonial, index) => (
-              <div key={index} className="flex-shrink-0 w-full text-center px-4">
+              <div
+                key={index}
+                className="flex-shrink-0 w-full text-center px-4"
+              >
                 <p className="text-sm sm:text-base text-gray-600 dark:text-gray-300">
                   "{testimonial.quote}"
                 </p>
@@ -176,7 +153,11 @@ function Login() {
         <div className="flex flex-col sm:flex-row justify-center gap-4 sm:gap-6 mb-4">
           <div className="flex flex-col items-center justify-center">
             <div className="flex items-center">
-              <svg className="w-5 h-5 sm:w-6 sm:h-6 text-indigo-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <svg
+                className="w-5 h-5 sm:w-6 sm:h-6 text-indigo-600 mr-2"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
                 <path d="M10 2a8 8 0 100 16 8 8 0 000-16zm1 11.93V12H9v1.93A5.986 5.986 0 014 8h2v2h2V8h4v2h2a5.986 5.986 0 01-5 5.93z" />
               </svg>
               <span className="text-sm sm:text-base text-gray-600 dark:text-gray-300">
@@ -184,13 +165,20 @@ function Login() {
               </span>
             </div>
             <div className="w-full max-w-[120px] h-1.5 bg-gray-200 dark:bg-gray-700 mt-2 rounded-full">
-              <div className="h-full bg-indigo-600 rounded-full animate-progress" style={{ width: "75%" }}></div>
+              <div
+                className="h-full bg-indigo-600 rounded-full animate-progress"
+                style={{ width: "75%" }}
+              ></div>
             </div>
           </div>
 
           <div className="flex flex-col items-center justify-center">
             <div className="flex items-center">
-              <svg className="w-5 h-5 sm:w-6 sm:h-6 text-indigo-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <svg
+                className="w-5 h-5 sm:w-6 sm:h-6 text-indigo-600 mr-2"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
                 <path d="M10 2a8 8 0 100 16 8 8 0 000-16zm3.36 5.64l-4 4a1 1 0 01-1.42 0l-2-2a1 1 0 011.42-1.42L9 9.83l3.36-3.36a1 1 0 011.42 1.42z" />
               </svg>
               <span className="text-sm sm:text-base text-gray-600 dark:text-gray-300">
@@ -198,17 +186,26 @@ function Login() {
               </span>
             </div>
             <div className="w-full max-w-[120px] h-1.5 bg-gray-200 dark:bg-gray-700 mt-2 rounded-full">
-              <div className="h-full bg-indigo-600 rounded-full animate-progress" style={{ width: "99%" }}></div>
+              <div
+                className="h-full bg-indigo-600 rounded-full animate-progress"
+                style={{ width: "99%" }}
+              ></div>
             </div>
           </div>
         </div>
         <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
           Trusted by professionals worldwide.{" "}
-          <a href="/terms" className="underline hover:text-indigo-600 transition duration-200">
+          <a
+            href="/terms"
+            className="underline hover:text-indigo-600 transition duration-200"
+          >
             Terms
           </a>{" "}
           &{" "}
-          <a href="/privacy" className="underline hover:text-indigo-600 transition duration-200">
+          <a
+            href="/privacy"
+            className="underline hover:text-indigo-600 transition duration-200"
+          >
             Privacy
           </a>
         </p>

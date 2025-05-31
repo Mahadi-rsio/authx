@@ -5,16 +5,40 @@ const GoogleSignInButton = () => {
   const [isLoading, setIsLoading] = useState(false);
 
   const login = useGoogleLogin({
-    onSuccess: (tokenResponse) => {
-      localStorage.setItem("google_token", JSON.stringify(tokenResponse));
+  onSuccess: async (tokenResponse) => {
+    const accessToken = tokenResponse.access_token;
 
+    // Save token (optional)
+    localStorage.setItem("google_token", accessToken);
+
+    const url = 'https://cautious-waffle-g459gw4qqx55hvvgx-5000.app.github.dev/user';
+
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,  // Send token to backend
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to fetch user data');
+      }
+
+      const userData = await res.json();
+      console.log('User data:', userData);
       setIsLoading(false);
-    },
-    onError: () => {
-      console.error("Google login failed");
-    },
-    flow: "implicit",
-  });
+      alert('Yes, it works!');
+    } catch (err) {
+      console.error('Fetch error:', err);
+      alert('Failed to fetch user data');
+    }
+  },
+  onError: () => {
+    console.error("Google login failed");
+  },
+  flow: "implicit",
+});
 
   return (
     <>

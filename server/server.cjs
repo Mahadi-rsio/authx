@@ -2,10 +2,17 @@ const express = require('express');
 const axios = require('axios');
 const app = express();
 const cors = require('cors')
+const path = require('path')
 
+app.use(express.static(path.join(__dirname,'dist')));
 app.use(cors())
 
-app.get('/user', async (req, res) => {
+app.get('/',(req,res)=>{
+    res.sendFile(path.join(__dirname,"dist","index.html"))
+})
+
+
+app.get('/auth', async (req, res) => {
   const accessToken = req.headers.authorization?.split(' ')[1]; // Expect: Bearer <access_token>
 
   if (!accessToken) {

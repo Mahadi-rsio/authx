@@ -1,4 +1,5 @@
 import pytest
+from app.repositories.password_credential import PasswordCredentialRepository
 from app.services.identity_service import IdentityService
 from app.services.tenant_service import TenantService
 from app.services.user_service import UserService
@@ -128,6 +129,25 @@ async def test_cross_tenant_identity_user_link_is_rejected(db_session) -> None:
     with pytest.raises(IntegrityError):
         await identity_service.create_identity(
             ctx_a, user_id=user_b.id, provider=PROVIDER, provider_user_id="g-x"
+        )
+    await db_session.rollback()
+
+
+async def test_cross_tenant_password_credential_user_link_is_rejected(db_session) -> None:
+    ctx_a, ctx_b = await _tenants(db_session)
+    user_service = UserService(db_session)
+    credential_repository = PasswordCredentialRepository(db_session)
+
+    await user_service.create_user(ctx_a, email="a@example.com", name="A")
+    user_b = await user_service.create_user(ctx_b, email="b@example.com", name="B")
+
+    # A credential for tenant B's user can never be created inside tenant A:
+    # the composite FK (tenant_id, user_id) -> users(tenant_id, id) rejects it.
+    with pytest.raises(IntegrityError):
+        await credential_repository.create(
+            tenant_id=ctx_a.tenant_id,
+            user_id=user_b.id,
+            password_hash="does-not-matter",
         )
     await db_session.rollback()
 

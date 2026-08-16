@@ -5,10 +5,10 @@ Multi-tenant authentication service for PageX.
 A production-oriented foundation built with Python, FastAPI, PostgreSQL,
 SQLAlchemy 2.x (async), Alembic, Pydantic v2, Redis, and asyncpg.
 
-> **Status:** Phase 3 (partial) — multi-tenant foundation plus a
-> **development-only** tenant authentication system issuing Tenant API
-> Tokens. OAuth, magic links, user email/password login, and advanced
-> sessions are **not** implemented yet.
+> **Status:** Phase 3 — multi-tenant foundation, a **development-only**
+> tenant authentication system issuing Tenant API Tokens, and **real user
+> email/password authentication** with User Access Tokens. OAuth, magic
+> links, refresh tokens, and advanced sessions are **not** implemented yet.
 
 ## Quick start
 
@@ -28,7 +28,7 @@ bootstraps two mock tenants with hashed credentials (see
 ## Common commands
 
 ```bash
-uv run pytest                          # run tests (53 passing)
+uv run pytest                          # run tests
 uv run pytest -m integration           # integration tests only
 uv run ruff check .                    # lint
 uv run ruff format .                   # format
@@ -96,18 +96,59 @@ Content-Type: application/json
 
 ### Key points
 
-- A Tenant API Token is **NOT** a user access token. User access tokens are
-  issued only after a real user email/password login (not implemented yet)
-  and contain `user_id` + `tenant_id`.
+- A Tenant API Token is **NOT** a user access token. User Access Tokens are
+  issued only after a real user email/password login and contain
+  `user_id` + `tenant_id`.
 - The trusted tenant identity comes **only** from the token. Protected
   tenant endpoints must use `get_authenticated_tenant` (a FastAPI
   dependency) — `X-Tenant-Id` is never trusted as the authenticated
   identity, and supplying a different `X-Tenant-Id` cannot change the
   tenant in a valid token.
-- Tokens are signed JWTs (`HS256`) with claims `sub`, `principal_type:
-  "tenant"`, `tenant_id`, `iat`, `exp`, and `jti`. See
-  [docs/architecture.md](docs/architecture.md) for details.
+- Tokens are signed JWTs (`HS256`) with claims `sub`, `principal_type`,
+  `tenant_id`, `iat`, `exp`, and `jti` (`principal_type` is `"tenant"` for
+  Tenant API Tokens and `"user"` for User Access Tokens, which also carry
+  `user_id`). The two types are validated strictly and are never
+  interchangeable. See [docs/architecture.md](docs/architecture.md).
 - Development-only; mock tenants are seeded only when `APP_ENV=development`.
+
+## User email/password authentication
+
+Users register and log in with a real email + password stored as an
+Argon2id hash (plaintext never touches the database). Both registration and
+login require a Tenant API Token so the tenant comes **only** from the
+authenticated token.
+
+```
+POST /api/v1/auth/users/register      # Bearer <tenant-api-token>
+POST /api/v1/auth/users/login         # Bearer <tenant-api-token> -> User Access Token
+GET  /api/v1/auth/users/me            # Bearer <user-access-token>
+```
+
+### Example
+
+```http
+POST /api/v1/auth/users/register
+Authorization: Bearer <tenant-api-token>
+Content-Type: application/json
+
+{ "email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!" }
+```
+
+```http
+POST /api/v1/auth/users/login
+Authorization: Bearer <tenant-api-token>
+Content-Type: application/json
+
+{ "email": "alice@example.com", "password": "AlicePassword123!" }
+```
+
+```json
+{ "access_token": "...", "token_type": "bearer" }
+```
+
+The returned token is a **User Access Token** (`principal_type: "user"`) —
+use it for user-protected endpoints such as `GET /api/v1/auth/users/me`.
+See [docs/api.md](docs/api.md) for the full reference.
 
 ### Mock tenant credentials (development only)
 

@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     tenant_api_token_algorithm: str = "HS256"
     tenant_api_token_expire_minutes: int = 60
 
+    # User Access Token (authenticated user within a tenant).
+    user_access_token_secret: str = "dev-user-access-token-secret-change-me"
+    user_access_token_algorithm: str = "HS256"
+    user_access_token_expire_minutes: int = 60
+
     # Development-only mock tenant credentials used by the seed/bootstrap
     # logic. Override as a JSON array, e.g.:
     #   DEV_TENANT_CREDENTIALS='[{"email":"a@example.com","password":"..",...}]'

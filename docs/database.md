@@ -10,7 +10,8 @@ engine/session setup lives in `app/database/session.py`.
 
 ## Schema
 
-Four tables: `tenants`, `tenant_credentials`, `users`, `identities`.
+Five tables: `tenants`, `tenant_credentials`, `users`, `identities`,
+`password_credentials`.
 
 ### tenants
 
@@ -88,6 +89,28 @@ Constraints:
 - `fk_identities_tenant_user_users` — composite FK `(tenant_id, user_id) -> users(tenant_id, id)`. This is the database-level guarantee that an identity can never reference a user in a different tenant.
 - `fk_identities_tenant_id_tenants` — FK `tenant_id -> tenants.id ON DELETE CASCADE`.
 
+### password_credentials
+
+Real, database-backed password credentials for **users** (one per user per
+tenant). Plaintext passwords never touch the database — only the Argon2id
+`password_hash` is stored.
+
+| Column               | Type                       | Notes                                |
+| -------------------- | -------------------------- | ------------------------------------ |
+| `id`                 | `uuid` PK                  | `gen_random_uuid()`                  |
+| `tenant_id`          | `uuid` NOT NULL            | FK → `tenants.id`, indexed, CASCADE  |
+| `user_id`            | `uuid` NOT NULL            | indexed                              |
+| `password_hash`      | `varchar(255)` NOT NULL    | Argon2id hash                        |
+| `password_changed_at`| `timestamptz` NOT NULL     | `now()` default                      |
+| `created_at`         | `timestamptz` NOT NULL     |                                      |
+| `updated_at`         | `timestamptz` NOT NULL     |                                      |
+
+Constraints:
+
+- `uq_password_credentials_tenant_id_user_id` — `UNIQUE (tenant_id, user_id)` (one credential per user per tenant).
+- `fk_password_credentials_tenant_user_users` — composite FK `(tenant_id, user_id) -> users(tenant_id, id)`. Database-level guarantee that a credential can never reference a user in a different tenant.
+- `fk_password_credentials_tenant_id_tenants` — FK `tenant_id -> tenants.id ON DELETE CASCADE`.
+
 ## Identifier strategy
 
 All primary keys are UUIDs (`uuid` type):
@@ -102,8 +125,9 @@ All primary keys are UUIDs (`uuid` type):
    requires a `tenant_id` and filters by it.
 3. Emails and `(provider, provider_user_id)` are unique **within a tenant**,
    never globally.
-4. The composite FK on `identities` makes cross-tenant identity↔user links a
-   database constraint violation.
+4. The composite FK on `identities` and `password_credentials` makes
+   cross-tenant identity↔user and credential↔user links a database constraint
+   violation.
 
 ## Migrations
 
@@ -121,7 +145,8 @@ uv run alembic history                                        # revision list
 | ------------ | ---------------------------- |
 | `e13bba67ccf8` | initial empty (baseline)     |
 | `a2585b458e1d` | add tenants, users, identities |
-| `95ab5b81e296` | add tenant credentials (head) |
+| `95ab5b81e296` | add tenant credentials       |
+| `07b6bb28ab24` | add password credentials (head) |
 
 Alembic's `env.py` (`alembic/env.py`) imports the application settings to
 derive the connection URL and imports `app.models` so autogenerate sees every

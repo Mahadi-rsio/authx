@@ -3,15 +3,18 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.principal import UserContext
 from app.auth.tokens import (
     ExpiredTokenError,
     InvalidPrincipalTypeError,
     InvalidTokenError,
     decode_tenant_api_token,
+    decode_user_access_token,
 )
 from app.core.config import get_settings
 from app.database.session import get_db_session
 from app.repositories.tenant import TenantRepository
+from app.repositories.user import UserRepository
 from app.tenants.context import TenantContext
 from app.tenants.resolver import HeaderTenantResolver
 
@@ -88,3 +91,46 @@ async def get_authenticated_tenant(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return TenantContext.from_tenant(tenant)
+
+
+async def get_authenticated_user(
+    db: Annotated[AsyncSession, Depends(get_db_session)],
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> UserContext:
+    """Authenticate a User Access Token and return its ``UserContext``.
+
+    The trusted user and tenant identity comes ONLY from the token
+    (``user_id``/``tenant_id`` claims); ``X-Tenant-Id`` is never consulted.
+    The token signature, expiration, and ``principal_type == "user"`` are
+    validated, and the user must still exist and belong to the claimed
+    tenant in the database.
+    """
+    token = _bearer_token(authorization)
+    settings = get_settings()
+    try:
+        claims = decode_user_access_token(
+            token,
+            secret=settings.user_access_token_secret,
+            algorithm=settings.user_access_token_algorithm,
+        )
+    except ExpiredTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except (InvalidTokenError, InvalidPrincipalTypeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    user = await UserRepository(db).get_by_id(claims.tenant_id, claims.user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return UserContext.from_user(user)

@@ -95,7 +95,62 @@ The trusted tenant identity comes **only** from the Tenant API Token
 consulted by `get_authenticated_tenant`, so a request that supplies a
 different `X-Tenant-Id` header still resolves to the token's tenant.
 
-### Development seeding
+### User authentication (real credentials)
+
+Users authenticate with a real email + password stored as an Argon2id hash.
+A **User Access Token** (signed JWT) is distinct from a Tenant API Token: it
+represents an authenticated *user within a tenant* and is required for
+user-protected endpoints such as `/users/me`.
+
+### Flow
+
+```
+Tenant API Token (authenticated tenant)
+        ↓
+UserAuthService.register_user(context, email, name, password)  (Argon2id hash)
+        ↓
+User + PasswordCredential                                        (per-tenant)
+        ↓
+UserAuthService.authenticate_user(context, email, password)     (tenant-scoped lookup + Argon2id verify)
+        ↓
+UserPrincipal
+        ↓
+UserAuthService.issue_user_token(...)                           (signed User Access Token)
+        ↓
+get_authenticated_user() dependency                             (validate token)
+        ↓
+UserContext
+```
+
+### Components
+
+- `app/auth/principal.py` — `UserPrincipal` (token principal) and
+  `UserContext` (authenticated request context).
+- `app/auth/tokens.py` — `create_user_access_token` /
+  `decode_user_access_token` (HS256 JWT). Claims: `sub`, `principal_type="user"`,
+  `user_id`, `tenant_id`, `iat`, `exp`, `jti`. `principal_type` is validated
+  strictly for both token types.
+- `app/models/password_credential.py` — `password_credentials` table
+  (one per user per tenant, Argon2id `password_hash` only, composite FK
+  `(tenant_id, user_id) -> users(tenant_id, id)`).
+- `app/repositories/password_credential.py` — tenant-scoped credential
+  lookup by user.
+- `app/services/user_auth_service.py` — register, authenticate, issue user
+  tokens (transaction boundary); rejects duplicate emails per tenant.
+- `app/api/auth.py` — `POST /api/v1/auth/users/register`,
+  `POST /api/v1/auth/users/login`, `GET /api/v1/auth/users/me`.
+- `app/api/dependencies.py` — `get_authenticated_user`.
+
+### Trust boundary
+
+The trusted user and tenant identity comes **only** from the User Access
+Token (`user_id`/`tenant_id` claims) and is verified against the database:
+the user must still exist and belong to the claimed tenant. `X-Tenant-Id` is
+never consulted. Registration and login derive the tenant ONLY from the
+authenticated Tenant API Token; a `tenant_id` in the request body is
+ignored.
+
+## Development seeding
 
 On startup, when `APP_ENV=development`, `app/main.py` calls
 `seed_dev_tenants`, creating the two mock tenants and their hashed
@@ -146,8 +201,8 @@ FastAPI lifespan on shutdown.
 1. ✅ Tenant authentication (development-only) — Argon2id password hashing, a
    tenant credential store, Tenant API Token issuance, and authenticated
    tenant resolution via `get_authenticated_tenant`.
-2. User registration and user email/password login (Tenant API Token will
-   gate registration).
-3. Session/JWT issuance for users using Redis, and the `app/api/v1` router
-   under `API_V1_PREFIX`.
-4. `GET /ready` readiness endpoint and request-scoped transaction handling.
+2. ✅ User registration and user email/password login — real
+   `password_credentials` (Argon2id), User Access Tokens, and
+   `get_authenticated_user`.
+3. Refresh tokens, sessions backed by Redis, and `GET /ready` readiness
+   endpoint.

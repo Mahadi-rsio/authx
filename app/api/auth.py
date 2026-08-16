@@ -1,11 +1,16 @@
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Security, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_authenticated_tenant, get_authenticated_user
+from app.api.dependencies import (
+    get_authenticated_tenant,
+    get_authenticated_user,
+    tenant_bearer,
+    user_bearer,
+)
 from app.auth.principal import UserContext
 from app.database.session import get_db_session
 from app.services.tenant_auth_service import TenantAuthService
@@ -86,6 +91,7 @@ async def tenant_login(
     "/auth/users/register",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Security(tenant_bearer)],
 )
 async def register_user(
     payload: UserRegisterRequest,
@@ -120,7 +126,11 @@ async def register_user(
     )
 
 
-@router.post("/auth/users/login", response_model=TokenResponse)
+@router.post(
+    "/auth/users/login",
+    response_model=TokenResponse,
+    dependencies=[Security(tenant_bearer)],
+)
 async def user_login(
     payload: UserLoginRequest,
     tenant: Annotated[TenantContext, Depends(get_authenticated_tenant)],
@@ -146,7 +156,11 @@ async def user_login(
     return TokenResponse(access_token=token, token_type="bearer")
 
 
-@router.get("/auth/users/me", response_model=UserResponse)
+@router.get(
+    "/auth/users/me",
+    response_model=UserResponse,
+    dependencies=[Security(user_bearer)],
+)
 async def users_me(
     user: Annotated[UserContext, Depends(get_authenticated_user)],
 ) -> UserResponse:

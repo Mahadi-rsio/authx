@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
+from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.principal import UserContext
@@ -19,6 +20,22 @@ from app.tenants.context import TenantContext
 from app.tenants.resolver import HeaderTenantResolver
 
 _tenant_resolver = HeaderTenantResolver()
+
+# Declared security schemes so Swagger UI shows an Authorize button and
+# sends the Authorization header. The actual token validation lives in
+# ``get_authenticated_tenant`` / ``get_authenticated_user``; these
+# dependencies only advertise the schemes in OpenAPI (auto_error=False so
+# they never short-circuit the dedicated auth dependencies).
+tenant_bearer = HTTPBearer(
+    scheme_name="TenantAPIKey",
+    description="Bearer Tenant API Token (from POST /api/v1/auth/tenant/login).",
+    auto_error=False,
+)
+user_bearer = HTTPBearer(
+    scheme_name="UserAccessToken",
+    description="Bearer User Access Token (from POST /api/v1/auth/users/login).",
+    auto_error=False,
+)
 
 
 async def get_tenant_context(

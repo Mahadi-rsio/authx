@@ -10,7 +10,7 @@ engine/session setup lives in `app/database/session.py`.
 
 ## Schema
 
-Three tables: `tenants`, `users`, `identities`.
+Four tables: `tenants`, `tenant_credentials`, `users`, `identities`.
 
 ### tenants
 
@@ -23,6 +23,29 @@ Root of the tenancy hierarchy. Not tenant-owned.
 | `slug`      | `varchar(120)` NOT NULL    | unique index         |
 | `created_at`| `timestamptz` NOT NULL     | `now()` default      |
 | `updated_at`| `timestamptz` NOT NULL     | `now()` default      |
+
+### tenant_credentials
+
+Development-only credentials used to authenticate a **tenant** (not a user).
+One row per tenant; passwords are stored as Argon2id hashes — plaintext
+never touches the database.
+
+| Column          | Type                       | Notes                               |
+| --------------- | -------------------------- | ----------------------------------- |
+| `id`            | `uuid` PK                  | `gen_random_uuid()`                 |
+| `tenant_id`     | `uuid` NOT NULL            | FK → `tenants.id`, indexed, CASCADE, UNIQUE |
+| `email`         | `varchar(320)` NOT NULL    | unique index (login by email)       |
+| `password_hash` | `varchar(255)` NOT NULL    | Argon2id hash                       |
+| `created_at`    | `timestamptz` NOT NULL     |                                     |
+| `updated_at`    | `timestamptz` NOT NULL     |                                     |
+
+Constraints:
+
+- `uq_tenant_credentials_tenant_id` — `UNIQUE (tenant_id)` (one credential per tenant).
+- Unique index `ix_tenant_credentials_email` — tenant login is by email alone.
+
+> Seeded only in development (`APP_ENV=development`) from
+> `DEV_TENANT_CREDENTIALS`; never seeded in production.
 
 ### users
 
@@ -97,7 +120,8 @@ uv run alembic history                                        # revision list
 | Revision     | Description                  |
 | ------------ | ---------------------------- |
 | `e13bba67ccf8` | initial empty (baseline)     |
-| `a2585b458e1d` | add tenants, users, identities (head) |
+| `a2585b458e1d` | add tenants, users, identities |
+| `95ab5b81e296` | add tenant credentials (head) |
 
 Alembic's `env.py` (`alembic/env.py`) imports the application settings to
 derive the connection URL and imports `app.models` so autogenerate sees every

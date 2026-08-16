@@ -36,7 +36,7 @@ sessions) in later phases.
 | ----- | ---------------------------------------------------------------- | ------------- |
 | 1     | App entrypoint, config, async DB, Redis, health, migrations, CI  | Done          |
 | 2     | Multi-tenant foundation: Tenant/User/Identity, TenantContext     | Done          |
-| 3     | Password auth, sessions/JWT, authenticated tenant resolution     | Not started   |
+| 3     | Password auth, sessions/JWT, authenticated tenant resolution     | Partial — tenant authentication (development-only) done; user register/login and user sessions pending |
 | 4+    | OAuth providers, magic links, API keys, advanced sessions        | Not started   |
 
 See the Phase 3 section in [architecture.md](architecture.md) for the planned
@@ -82,3 +82,7 @@ variables (case-insensitive) or an `.env` / `.env.local` file. See
 | `DATABASE_POOL_SIZE`  | `5`                                                  |
 | `DATABASE_MAX_OVERFLOW`| `10`                                                 |
 | `REDIS_URL`           | `redis://localhost:6379/0`                           |
+| `TENANT_API_TOKEN_SECRET` | `dev-tenant-api-token-secret-change-me` (HS256 key; override in prod) |
+| `TENANT_API_TOKEN_ALGORITHM` | `HS256`                                       |
+| `TENANT_API_TOKEN_EXPIRE_MINUTES` | `60`                                        |
+| `DEV_TENANT_CREDENTIALS` | two mock tenants (JSON array; development only) |

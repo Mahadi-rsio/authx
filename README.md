@@ -5,8 +5,10 @@ Multi-tenant authentication service for PageX.
 A production-oriented foundation built with Python, FastAPI, PostgreSQL,
 SQLAlchemy 2.x (async), Alembic, Pydantic v2, Redis, and asyncpg.
 
-> **Status:** Phase 2 — multi-tenant foundation. OAuth, magic links, password
-> authentication, and advanced sessions are **not** implemented yet.
+> **Status:** Phase 3 (partial) — multi-tenant foundation plus a
+> **development-only** tenant authentication system issuing Tenant API
+> Tokens. OAuth, magic links, user email/password login, and advanced
+> sessions are **not** implemented yet.
 
 ## Quick start
 
@@ -19,10 +21,14 @@ uv run uvicorn app.main:app --reload
 
 Open <http://localhost:8000/health> and <http://localhost:8000/docs>.
 
+On startup in `development` (`APP_ENV=development`, the default) the app
+bootstraps two mock tenants with hashed credentials (see
+[Tenant API Token](#tenant-api-token)). Nothing is seeded in production.
+
 ## Common commands
 
 ```bash
-uv run pytest                          # run tests (26 passing)
+uv run pytest                          # run tests (53 passing)
 uv run pytest -m integration           # integration tests only
 uv run ruff check .                    # lint
 uv run ruff format .                   # format
@@ -64,3 +70,53 @@ Every tenant-owned entity carries `tenant_id`, and every tenant-scoped
 database operation filters by it. Cross-tenant identity↔user links are
 rejected at the database level by a composite foreign key. See
 [architecture.md](docs/architecture.md) and [database.md](docs/database.md).
+
+## Tenant API Token
+
+**Development-only tenant authentication.**
+
+A **Tenant API Token** represents an authenticated *tenant* (not a user). It
+is required for tenant-level operations — most importantly **user
+registration** — and is issued by:
+
+```
+POST /api/v1/auth/tenant/login
+```
+
+```http
+POST /api/v1/auth/tenant/login
+Content-Type: application/json
+
+{ "email": "tenant-a@example.com", "password": "TenantA123!" }
+```
+
+```json
+{ "access_token": "...", "token_type": "bearer" }
+```
+
+### Key points
+
+- A Tenant API Token is **NOT** a user access token. User access tokens are
+  issued only after a real user email/password login (not implemented yet)
+  and contain `user_id` + `tenant_id`.
+- The trusted tenant identity comes **only** from the token. Protected
+  tenant endpoints must use `get_authenticated_tenant` (a FastAPI
+  dependency) — `X-Tenant-Id` is never trusted as the authenticated
+  identity, and supplying a different `X-Tenant-Id` cannot change the
+  tenant in a valid token.
+- Tokens are signed JWTs (`HS256`) with claims `sub`, `principal_type:
+  "tenant"`, `tenant_id`, `iat`, `exp`, and `jti`. See
+  [docs/architecture.md](docs/architecture.md) for details.
+- Development-only; mock tenants are seeded only when `APP_ENV=development`.
+
+### Mock tenant credentials (development only)
+
+| Tenant   | Email                    | Password      | Slug      |
+| -------- | ------------------------ | ------------- | --------- |
+| Tenant A | `tenant-a@example.com`   | `TenantA123!` | `tenant-a`|
+| Tenant B | `tenant-b@example.com`   | `TenantB123!` | `tenant-b`|
+
+Credentials are configurable through `DEV_TENANT_CREDENTIALS` (JSON array
+of `{email, password, name, slug}`) and passwords are stored only as
+Argon2id hashes — plaintext never touches the database. These credentials
+are **never seeded in production**.

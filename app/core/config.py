@@ -1,6 +1,20 @@
 from functools import lru_cache
 
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class DevTenantCredential(BaseModel):
+    """A development-only mock tenant credential.
+
+    Used to seed mock tenants on development/test startup. Never populated
+    in production; plaintext passwords never touch the database.
+    """
+
+    email: str
+    password: str
+    name: str
+    slug: str
 
 
 class Settings(BaseSettings):
@@ -29,6 +43,29 @@ class Settings(BaseSettings):
     database_max_overflow: int = 10
 
     redis_url: str = "redis://localhost:6379/0"
+
+    # Tenant API Token (development tenant authentication).
+    tenant_api_token_secret: str = "dev-tenant-api-token-secret-change-me"
+    tenant_api_token_algorithm: str = "HS256"
+    tenant_api_token_expire_minutes: int = 60
+
+    # Development-only mock tenant credentials used by the seed/bootstrap
+    # logic. Override as a JSON array, e.g.:
+    #   DEV_TENANT_CREDENTIALS='[{"email":"a@example.com","password":"..",...}]'
+    dev_tenant_credentials: list[DevTenantCredential] = [
+        DevTenantCredential(
+            email="tenant-a@example.com",
+            password="TenantA123!",
+            name="Tenant A",
+            slug="tenant-a",
+        ),
+        DevTenantCredential(
+            email="tenant-b@example.com",
+            password="TenantB123!",
+            name="Tenant B",
+            slug="tenant-b",
+        ),
+    ]
 
     @property
     def is_development(self) -> bool:

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import APIKeyHeader, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,11 +19,16 @@ from app.tenants.resolver import (
     ApiKeyTenantResolver,
     InvalidApiKeyError,
     MissingApiKeyError,
+    MissingTenantError,
+    MockApiKeyTenantResolver,
+    TenantHostResolver,
+    TenantMismatchError,
     TenantNotFoundError,
     TenantResolutionError,
 )
 
 _api_key_resolver = ApiKeyTenantResolver()
+_host_resolver = TenantHostResolver()
 
 # Declared security schemes so Swagger UI shows an Authorize button and
 # sends the respective credentials. The actual validation lives in
@@ -47,10 +52,13 @@ user_bearer = HTTPBearer(
 
 async def get_tenant_context(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    request: Request,
     x_authx_api_key: Annotated[str | None, Header(alias="X-AuthX-API-Key")] = None,
 ) -> TenantContext:
-    """Resolve the current tenant for a request via X-AuthX-API-Key."""
-    return await get_authenticated_tenant(db=db, x_authx_api_key=x_authx_api_key)
+    """Resolve the current tenant for a request via Host + X-AuthX-API-Key."""
+    return await get_authenticated_tenant(
+        db=db, request=request, x_authx_api_key=x_authx_api_key
+    )
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -72,31 +80,66 @@ def _bearer_token(authorization: str | None) -> str:
 
 async def get_authenticated_tenant(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    request: Request,
     x_authx_api_key: Annotated[str | None, Header(alias="X-AuthX-API-Key")] = None,
 ) -> TenantContext:
-    """Authenticate a Tenant API Key and return its ``TenantContext``.
+    """Authenticate a tenant using both the ``Host`` header and ``X-AuthX-API-Key``.
 
-    The trusted tenant identity comes ONLY from the resolved API key;
-    client-supplied parameters or tenant_ids from body/query/arbitrary headers
-    are never trusted.
+    Resolution pipeline:
+    1. Extract the tenant slug from ``Host: auth.<slug>.example.com``.
+    2. Look up the tenant in the database (→ host ``TenantContext``).
+    3. Resolve the tenant for the supplied API key (→ key ``TenantContext``).
+    4. Assert both tenant IDs match.
+
+    Both steps must succeed and agree on the same tenant.  Neither can
+    override the other.  The trusted tenant identity flows from this
+    dependency as a single ``TenantContext``; routes must never re-derive
+    the tenant from request body, query params, or arbitrary headers.
     """
     if not x_authx_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API key",
         )
+
+    host = request.headers.get("host")
+
+    # --- Step 1 & 2: resolve tenant from Host header ---
     try:
-        return await _api_key_resolver.resolve(db, x_authx_api_key)
-    except MissingApiKeyError as exc:
+        host_context = await _host_resolver.resolve(db, host)
+    except MissingTenantError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found",
+        )
+    except TenantNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found",
+        )
+
+    # --- Step 3: resolve tenant from API key ---
+    try:
+        key_context = await _api_key_resolver.resolve(db, x_authx_api_key)
+    except MissingApiKeyError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API key",
-        ) from exc
-    except (InvalidApiKeyError, TenantNotFoundError, TenantResolutionError) as exc:
+        )
+    except (InvalidApiKeyError, TenantNotFoundError, TenantResolutionError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
-        ) from exc
+        )
+
+    # --- Step 4: both sources must agree on the same tenant ---
+    if host_context.tenant_id != key_context.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+
+    return host_context
 
 
 async def get_authenticated_user(

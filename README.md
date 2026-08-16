@@ -71,29 +71,94 @@ database operation filters by it. Cross-tenant identity↔user links are
 rejected at the database level by a composite foreign key. See
 [architecture.md](docs/architecture.md) and [database.md](docs/database.md).
 
-## Tenant authentication (Development API Keys)
+## Tenant authentication (Host + API Key)
 
-**Development-only mock tenant authentication.**
+**Phase 1 — Development-only mock tenant authentication via hostname + API key.**
 
-Tenant authentication represents an authenticated *tenant* (not a user) and is
-required for tenant-level operations — most importantly **user registration** and
-**user login**. In development, tenant authentication is performed using a mock
-API key sent via the `X-AuthX-API-Key` header:
+Each tenant is addressed via a dedicated authentication hostname:
 
-```http
-X-AuthX-API-Key: ax_test_tenant_a_mock_key
+```
+auth.<tenant-slug>.example.com
+```
+
+**Both** the hostname and the API key must be supplied and must identify the
+**same tenant**. Neither can override the other.
+
+```
+Request
+   │
+   ├── Host: auth.tenant-a.example.com
+   │        ↓
+   │   Tenant Host Resolver  →  Tenant A
+   │
+   └── X-AuthX-API-Key: ax_test_tenant_a_mock_key
+            ↓
+       API Key Validator     →  Tenant A
+            │
+            └── compare ──────┐
+                               ↓
+                         TenantContext (Tenant A)
+                               ↓
+                       Tenant-scoped APIs
 ```
 
 ### Key points
 
+- **Host identifies WHICH tenant** is being accessed.
+- **API key proves the caller is authorized** for that tenant.
+- Both MUST match. A Tenant B key sent to a Tenant A host returns `401`.
 - A Tenant API Key is **NOT** a user access token. User Access Tokens are
   issued only after a real user email/password login and contain
   `user_id` + `tenant_id`.
-- The trusted tenant identity comes **only** from the API key resolved via
-  `get_authenticated_tenant` (a FastAPI dependency). `X-Tenant-Id` or
-  body `tenant_id` fields are never trusted.
-- Development-only; mock tenant credentials and API keys are enabled only when
-  `APP_ENV=development`. Nothing is seeded or accepted in production.
+- The trusted tenant identity comes **only** from `get_authenticated_tenant`
+  (a FastAPI dependency). `tenant_id` in the request body, query params, or
+  arbitrary headers is **never** trusted.
+- Development-only; mock keys are active only when `APP_ENV=development`.
+
+### Local development (/etc/hosts)
+
+Add these entries to `/etc/hosts` so the tenant hostnames resolve to localhost:
+
+```
+127.0.0.1  auth.tenant-a.example.com
+127.0.0.1  auth.tenant-b.example.com
+```
+
+### Mock tenant credentials (development only)
+
+| Tenant   | Slug       | Auth Hostname                         | Mock API Key                  |
+| -------- | ---------- | ------------------------------------- | ----------------------------- |
+| Tenant A | `tenant-a` | `auth.tenant-a.example.com`           | `ax_test_tenant_a_mock_key`   |
+| Tenant B | `tenant-b` | `auth.tenant-b.example.com`           | `ax_test_tenant_b_mock_key`   |
+
+### Example curl commands
+
+**Tenant A:**
+```bash
+curl -X POST \
+  "http://auth.tenant-a.example.com:8000/api/v1/auth/users/register" \
+  -H "X-AuthX-API-Key: ax_test_tenant_a_mock_key" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"}'
+```
+
+**Tenant B:**
+```bash
+curl -X POST \
+  "http://auth.tenant-b.example.com:8000/api/v1/auth/users/register" \
+  -H "X-AuthX-API-Key: ax_test_tenant_b_mock_key" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "name": "Alice B", "password": "AlicePassword123!"}'
+```
+
+**Cross-tenant mismatch (returns 401):**
+```bash
+curl -X POST \
+  "http://auth.tenant-a.example.com:8000/api/v1/auth/users/register" \
+  -H "X-AuthX-API-Key: ax_test_tenant_b_mock_key" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"}'
+```
 
 ## User email/password authentication
 
@@ -138,15 +203,9 @@ GET /api/v1/auth/users/me
 Authorization: Bearer <user-access-token>
 ```
 
+
 See [docs/api.md](docs/api.md) for the full reference.
 
-### Mock tenant credentials (development only)
-
-| Tenant   | Email                    | Password      | Slug      | Mock API Key                  |
-| -------- | ------------------------ | ------------- | --------- | ----------------------------- |
-| Tenant A | `tenant-a@example.com`   | `TenantA123!` | `tenant-a`| `ax_test_tenant_a_mock_key`   |
-| Tenant B | `tenant-b@example.com`   | `TenantB123!` | `tenant-b`| `ax_test_tenant_b_mock_key`   |
-
-Credentials are configurable through `DEV_TENANT_CREDENTIALS` (JSON array
-of `{email, password, name, slug, api_key}`). Plaintext passwords never touch
-the database. These mock credentials and keys are **never active in production**.
+> **Note:** Credentials are configurable through `DEV_TENANT_CREDENTIALS` (JSON array
+> of `{email, password, name, slug, api_key}`). Plaintext passwords never touch
+> the database. Mock credentials and keys are **never active in production**.

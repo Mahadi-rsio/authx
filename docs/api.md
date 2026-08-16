@@ -46,39 +46,72 @@ GET /health
 { "status": "error", "version": "0.1.0", "checks": { "database": "error", "redis": "ok" } }
 ```
 
-## Tenant authentication (Development API Keys)
+## Tenant authentication (Host + API Key)
 
 Tenant authentication identifies and authenticates a **tenant** (not a user)
 and is required for tenant-level operations such as user registration and user
-login. In development, tenant authentication is performed using mock API keys
-via the `X-AuthX-API-Key` header:
+login.
 
-```http
-X-AuthX-API-Key: ax_test_tenant_a_mock_key
+Each tenant is addressed via a dedicated **authentication hostname**:
+
 ```
+auth.<tenant-slug>.example.com
+```
+
+Authentication requires **both**:
+1. A matching `Host` header (`auth.<slug>.example.com`) — identifies *which* tenant.
+2. A valid `X-AuthX-API-Key` header — proves the caller is authorized for that tenant.
+
+**Both must agree on the same tenant.** A key from Tenant B sent to Tenant A's
+hostname returns `401`. Neither can override the other.
+
+### Local development
+
+Add to `/etc/hosts`:
+
+```
+127.0.0.1  auth.tenant-a.example.com
+127.0.0.1  auth.tenant-b.example.com
+```
+
+Then requests to `http://auth.tenant-a.example.com:8000/...` will route to the
+locally running server with the correct `Host` header set automatically.
 
 ### Mock API keys (development only)
 
-| Tenant   | Email                    | Password      | Slug      | Mock API Key                  |
-| -------- | ------------------------ | ------------- | --------- | ----------------------------- |
-| Tenant A | `tenant-a@example.com`   | `TenantA123!` | `tenant-a`| `ax_test_tenant_a_mock_key`   |
-| Tenant B | `tenant-b@example.com`   | `TenantB123!` | `tenant-b`| `ax_test_tenant_b_mock_key`   |
+| Tenant   | Slug       | Auth Hostname                   | Mock API Key                  |
+| -------- | ---------- | ------------------------------- | ----------------------------- |
+| Tenant A | `tenant-a` | `auth.tenant-a.example.com`     | `ax_test_tenant_a_mock_key`   |
+| Tenant B | `tenant-b` | `auth.tenant-b.example.com`     | `ax_test_tenant_b_mock_key`   |
 
-Mock credentials and API keys are active only when `APP_ENV=development` and
-are **never active in production**.
+Mock keys are active only when `APP_ENV=development` and are
+**never active in production**.
 
 ### Using a Tenant API Key
 
 Protected tenant endpoints use the `get_authenticated_tenant` dependency,
-which validates the API key in the `X-AuthX-API-Key` header and resolves
-the `TenantContext`.
+which validates both the `Host` header and the `X-AuthX-API-Key` header and
+resolves the `TenantContext`.
 
 ```http
-X-AuthX-API-Key: <api-key>
+Host: auth.tenant-a.example.com
+X-AuthX-API-Key: ax_test_tenant_a_mock_key
 ```
 
-The trusted tenant identity comes **only** from the API key. `tenant_id` in the
-request body or query parameters is never trusted.
+The trusted tenant identity comes **only** from the dual host+API-key
+validation. `tenant_id` in the request body or query parameters is never
+trusted.
+
+### Error codes
+
+| Status | Condition |
+| ------ | --------- |
+| `401`  | Missing `X-AuthX-API-Key` |
+| `401`  | Invalid or unknown API key |
+| `401`  | API key tenant does not match hostname tenant |
+| `404`  | Hostname does not match `auth.<slug>.example.com` or tenant slug not found |
+
+
 
 ## User authentication (real credentials)
 
@@ -107,11 +140,13 @@ Request body: `UserRegisterRequest`
 
 ```http
 POST /api/v1/auth/users/register
+Host: auth.tenant-a.example.com
 X-AuthX-API-Key: ax_test_tenant_a_mock_key
 Content-Type: application/json
 
 { "email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!" }
 ```
+
 
 Response `201`: `UserResponse`
 

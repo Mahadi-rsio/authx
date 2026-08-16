@@ -45,45 +45,64 @@ the `X-AuthX-API-Key` header, matches it against development mock tenant
 credentials in settings, and validates against the database before returning
 a `TenantContext`.
 
-## Tenant authentication (development mock API keys)
+## Tenant authentication (Host + API Key)
 
-A **development-only** tenant authentication system validates **Tenant API
-Keys** via `X-AuthX-API-Key`. An API key represents an authenticated *tenant*
-and is required for tenant-level operations such as user registration and
-login.
+Tenant authentication in Phase 1 requires **both** a hostname and an API key
+that agree on the same tenant.
 
 ### Flow
 
 ```
-X-AuthX-API-Key
-        ↓
-MockApiKeyTenantResolver.resolve(api_key)   (matches dev mock credentials)
-        ↓
-TenantRepository.get_by_slug(...)            (database load)
-        ↓
-get_authenticated_tenant() dependency        (returns TenantContext)
-        ↓
-TenantContext
+HTTP Request
+     │
+     ├── Host: auth.tenant-a.example.com
+     │         ↓
+     │   TenantHostResolver.resolve(host)  (extracts slug, DB lookup)
+     │         ↓
+     │   host_context (TenantContext for Tenant A)
+     │
+     └── X-AuthX-API-Key: ax_test_tenant_a_mock_key
+               ↓
+         MockApiKeyTenantResolver.resolve(api_key)  (dev mock credentials)
+               ↓
+         key_context (TenantContext for Tenant A)
+               │
+               └── host_context.tenant_id == key_context.tenant_id ?
+                          ↓ YES               ↓ NO
+                    TenantContext          401 Unauthorized
+                          ↓
+                get_authenticated_tenant() dependency
+                          ↓
+                     Routes / Services
 ```
 
 ### Components
 
-- `app/tenants/resolver.py` — `MockApiKeyTenantResolver` (resolves mock API keys
-  in development, disabled in production).
+- `app/tenants/resolver.py` — `TenantHostResolver` (extracts slug from
+  `auth.<slug>.example.com`, configurable via `settings.auth_host_prefix` /
+  `settings.auth_host_suffix`; validates against the database), and
+  `MockApiKeyTenantResolver` (resolves mock API keys in development, disabled
+  in production).
 - `app/tenants/context.py` — `TenantContext`, the frozen tenant context.
-- `app/core/config.py` — `DevTenantCredential` (with `api_key`) and
-  `dev_tenant_credentials`.
+- `app/core/config.py` — `auth_host_prefix`, `auth_host_suffix`,
+  `DevTenantCredential` (with `api_key`) and `dev_tenant_credentials`.
 - `app/services/dev_seed.py` — idempotent development seed of mock tenants
   and credentials; refuses to run when not in development.
-- `app/api/dependencies.py` — `get_authenticated_tenant` (uses `X-AuthX-API-Key`).
+- `app/api/dependencies.py` — `get_authenticated_tenant` (reads `Host` +
+  `X-AuthX-API-Key`, enforces both resolve to the same tenant).
 - `app/api/auth.py` — `POST /api/v1/auth/users/register`,
   `POST /api/v1/auth/users/login`.
 
 ### Trust boundary
 
-The trusted tenant identity comes **only** from the resolved API key
-and flows to `TenantContext`. Client-supplied `tenant_id` from request body,
-query params, or arbitrary headers is never trusted.
+The trusted tenant identity comes **only** from the dual host+API-key
+validation and flows to `TenantContext`.  Client-supplied `tenant_id` from
+request body, query params, or arbitrary headers is never trusted.  The
+hostname alone does not authenticate (no API key → 401).  The API key alone
+does not authenticate (no matching hostname → host resolves first, mismatch →
+401).
+
+
 
 ### User authentication (real credentials)
 

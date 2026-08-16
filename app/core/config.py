@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
 
+    # Tenant authentication hostname. Each tenant is addressed via
+    # ``auth.<slug><auth_host_suffix>`` (e.g. ``auth.tenant-a.example.com``).
+    # The hostname identifies WHICH tenant is being accessed and must match
+    # the tenant authenticated by the API key.
+    auth_host_prefix: str = "auth."
+    auth_host_suffix: str = ".example.com"
+
     database_url: str = "postgresql+asyncpg://authx:authx@localhost:5432/authx"
     database_echo: bool = False
     database_pool_size: int = 5

@@ -12,7 +12,8 @@ from app.services.dev_seed import seed_dev_tenants
 from app.services.tenant_service import TenantService
 from app.services.user_service import UserService
 from app.tenants.context import TenantContext
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
+from starlette.testclient import TestClient
 
 pytestmark = pytest.mark.integration
 
@@ -22,6 +23,8 @@ ME_URL = "/api/v1/auth/users/me"
 
 TENANT_A_KEY = "ax_test_tenant_a_mock_key"
 TENANT_B_KEY = "ax_test_tenant_b_mock_key"
+TENANT_A_HOST = "auth.tenant-a.example.com"
+TENANT_B_HOST = "auth.tenant-b.example.com"
 
 
 @pytest.fixture()
@@ -39,7 +42,32 @@ def test_app(seeded_session):
 
 
 @pytest.fixture()
+async def client_a(test_app):
+    """HTTP client pre-configured with Tenant A's host."""
+    transport = httpx.ASGITransport(app=test_app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url=f"http://{TENANT_A_HOST}",
+        headers={"Host": TENANT_A_HOST},
+    ) as c:
+        yield c
+
+
+@pytest.fixture()
+async def client_b(test_app):
+    """HTTP client pre-configured with Tenant B's host."""
+    transport = httpx.ASGITransport(app=test_app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url=f"http://{TENANT_B_HOST}",
+        headers={"Host": TENANT_B_HOST},
+    ) as c:
+        yield c
+
+
+@pytest.fixture()
 async def client(test_app):
+    """Generic client (no default host); used for cross-tenant tests."""
     transport = httpx.ASGITransport(app=test_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -54,11 +82,23 @@ async def _tenants(session) -> tuple[TenantContext, TenantContext]:
     return TenantContext.from_tenant(tenant_a), TenantContext.from_tenant(tenant_b)
 
 
+def _make_request(host: str) -> Request:
+    """Build a minimal Starlette Request with the given Host header."""
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [(b"host", host.encode())],
+    }
+    return Request(scope)
+
+
 class TestMockApiKeyTenantAuth:
     """1. Tenant A mock API key authenticates Tenant A."""
 
     async def test_tenant_a_mock_api_key_authenticates_tenant_a(
-        self, client, test_app, seeded_session
+        self, client_a, test_app, seeded_session
     ) -> None:
         ctx_a, _ = await _tenants(seeded_session)
 
@@ -68,7 +108,9 @@ class TestMockApiKeyTenantAuth:
         ):
             return {"tenant_id": str(tenant.tenant_id), "slug": tenant.slug}
 
-        response = await client.get("/test/tenant-auth", headers={"X-AuthX-API-Key": TENANT_A_KEY})
+        response = await client_a.get(
+            "/test/tenant-auth", headers={"X-AuthX-API-Key": TENANT_A_KEY}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["tenant_id"] == str(ctx_a.tenant_id)
@@ -77,7 +119,7 @@ class TestMockApiKeyTenantAuth:
     """2. Tenant B mock API key authenticates Tenant B."""
 
     async def test_tenant_b_mock_api_key_authenticates_tenant_b(
-        self, client, test_app, seeded_session
+        self, client_b, test_app, seeded_session
     ) -> None:
         _, ctx_b = await _tenants(seeded_session)
 
@@ -87,7 +129,7 @@ class TestMockApiKeyTenantAuth:
         ):
             return {"tenant_id": str(tenant.tenant_id), "slug": tenant.slug}
 
-        response = await client.get(
+        response = await client_b.get(
             "/test/tenant-auth-b", headers={"X-AuthX-API-Key": TENANT_B_KEY}
         )
         assert response.status_code == 200
@@ -97,8 +139,8 @@ class TestMockApiKeyTenantAuth:
 
     """3. Invalid API key returns 401."""
 
-    async def test_invalid_api_key_returns_401(self, client) -> None:
-        response = await client.post(
+    async def test_invalid_api_key_returns_401(self, client_a) -> None:
+        response = await client_a.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": "invalid_api_key_12345"},
@@ -108,8 +150,8 @@ class TestMockApiKeyTenantAuth:
 
     """4. Missing API key returns 401."""
 
-    async def test_missing_api_key_returns_401(self, client) -> None:
-        response = await client.post(
+    async def test_missing_api_key_returns_401(self, client_a) -> None:
+        response = await client_a.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
         )
@@ -119,10 +161,10 @@ class TestMockApiKeyTenantAuth:
     """5. Tenant A API key creates users under Tenant A."""
 
     async def test_tenant_a_api_key_creates_users_under_tenant_a(
-        self, client, seeded_session
+        self, client_a, seeded_session
     ) -> None:
         ctx_a, ctx_b = await _tenants(seeded_session)
-        response = await client.post(
+        response = await client_a.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": TENANT_A_KEY},
@@ -143,10 +185,10 @@ class TestMockApiKeyTenantAuth:
     """6. Tenant B API key creates users under Tenant B."""
 
     async def test_tenant_b_api_key_creates_users_under_tenant_b(
-        self, client, seeded_session
+        self, client_b, seeded_session
     ) -> None:
         ctx_a, ctx_b = await _tenants(seeded_session)
-        response = await client.post(
+        response = await client_b.post(
             REGISTER_URL,
             json={"email": "bob@example.com", "name": "Bob", "password": "BobPassword123!"},
             headers={"X-AuthX-API-Key": TENANT_B_KEY},
@@ -167,15 +209,15 @@ class TestMockApiKeyTenantAuth:
     """7. Same email can exist in Tenant A and Tenant B."""
 
     async def test_same_email_can_exist_in_tenant_a_and_tenant_b(
-        self, client, seeded_session
+        self, client_a, client_b, seeded_session
     ) -> None:
         ctx_a, ctx_b = await _tenants(seeded_session)
-        resp_a = await client.post(
+        resp_a = await client_a.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice A", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
-        resp_b = await client.post(
+        resp_b = await client_b.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice B", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": TENANT_B_KEY},
@@ -189,10 +231,10 @@ class TestMockApiKeyTenantAuth:
     """8. Tenant A API key cannot access Tenant B users."""
 
     async def test_tenant_a_api_key_cannot_access_tenant_b_users(
-        self, client, seeded_session
+        self, client_a, client_b, seeded_session
     ) -> None:
         # Register user under Tenant B only
-        resp_b = await client.post(
+        resp_b = await client_b.post(
             REGISTER_URL,
             json={"email": "bob@example.com", "name": "Bob B", "password": "BobPassword123!"},
             headers={"X-AuthX-API-Key": TENANT_B_KEY},
@@ -200,7 +242,7 @@ class TestMockApiKeyTenantAuth:
         assert resp_b.status_code == 201
 
         # Attempt to login under Tenant A with Tenant B user credentials
-        login_a = await client.post(
+        login_a = await client_a.post(
             LOGIN_URL,
             json={"email": "bob@example.com", "password": "BobPassword123!"},
             headers={"X-AuthX-API-Key": TENANT_A_KEY},
@@ -208,7 +250,7 @@ class TestMockApiKeyTenantAuth:
         assert login_a.status_code == 401
 
         # Login under Tenant B succeeds
-        login_b = await client.post(
+        login_b = await client_b.post(
             LOGIN_URL,
             json={"email": "bob@example.com", "password": "BobPassword123!"},
             headers={"X-AuthX-API-Key": TENANT_B_KEY},
@@ -218,10 +260,10 @@ class TestMockApiKeyTenantAuth:
     """9. tenant_id in request body cannot override the API-key tenant."""
 
     async def test_tenant_id_in_request_body_cannot_override_api_key_tenant(
-        self, client, seeded_session
+        self, client_a, seeded_session
     ) -> None:
         ctx_a, ctx_b = await _tenants(seeded_session)
-        response = await client.post(
+        response = await client_a.post(
             REGISTER_URL,
             json={
                 "tenant_id": str(ctx_b.tenant_id),
@@ -243,23 +285,28 @@ class TestMockApiKeyTenantAuth:
     """10. Tenant API key does not produce a tenant JWT."""
 
     async def test_tenant_api_key_does_not_produce_tenant_jwt(
-        self, client, test_app, seeded_session
+        self, test_app, seeded_session
     ) -> None:
         # Tenant authentication resolves directly to TenantContext without
         # issuing or requiring a tenant JWT
-        context = await get_authenticated_tenant(db=seeded_session, x_authx_api_key=TENANT_A_KEY)
+        request = _make_request(TENANT_A_HOST)
+        context = await get_authenticated_tenant(
+            db=seeded_session, request=request, x_authx_api_key=TENANT_A_KEY
+        )
         assert isinstance(context, TenantContext)
         assert context.slug == "tenant-a"
 
     """11. User login still produces the existing user access token."""
 
-    async def test_user_login_produces_user_access_token(self, client, seeded_session) -> None:
-        await client.post(
+    async def test_user_login_produces_user_access_token(
+        self, client_a, seeded_session
+    ) -> None:
+        await client_a.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
-        login_resp = await client.post(
+        login_resp = await client_a.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": TENANT_A_KEY},
@@ -281,21 +328,23 @@ class TestMockApiKeyTenantAuth:
 
     """12. User access token remains tenant-scoped."""
 
-    async def test_user_access_token_remains_tenant_scoped(self, client, seeded_session) -> None:
+    async def test_user_access_token_remains_tenant_scoped(
+        self, client_a, seeded_session
+    ) -> None:
         ctx_a, _ = await _tenants(seeded_session)
-        await client.post(
+        await client_a.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
-        login_resp = await client.post(
+        login_resp = await client_a.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "AlicePassword123!"},
             headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
         user_token = login_resp.json()["access_token"]
 
-        me_resp = await client.get(ME_URL, headers={"Authorization": f"Bearer {user_token}"})
+        me_resp = await client_a.get(ME_URL, headers={"Authorization": f"Bearer {user_token}"})
         assert me_resp.status_code == 200
         me_data = me_resp.json()
         assert me_data["email"] == "alice@example.com"
@@ -309,8 +358,11 @@ class TestMockApiKeyTenantAuth:
         monkeypatch.setenv("APP_ENV", "production")
         get_settings.cache_clear()
         try:
+            request = _make_request(TENANT_A_HOST)
             with pytest.raises(HTTPException) as exc_info:
-                await get_authenticated_tenant(db=seeded_session, x_authx_api_key=TENANT_A_KEY)
+                await get_authenticated_tenant(
+                    db=seeded_session, request=request, x_authx_api_key=TENANT_A_KEY
+                )
             assert exc_info.value.status_code == 401
         finally:
             get_settings.cache_clear()

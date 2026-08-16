@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
-from fastapi.security import HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.principal import UserContext
@@ -9,28 +9,35 @@ from app.auth.tokens import (
     ExpiredTokenError,
     InvalidPrincipalTypeError,
     InvalidTokenError,
-    decode_tenant_api_token,
     decode_user_access_token,
 )
 from app.core.config import get_settings
 from app.database.session import get_db_session
-from app.repositories.tenant import TenantRepository
 from app.repositories.user import UserRepository
 from app.tenants.context import TenantContext
-from app.tenants.resolver import HeaderTenantResolver
+from app.tenants.resolver import (
+    ApiKeyTenantResolver,
+    InvalidApiKeyError,
+    MissingApiKeyError,
+    TenantNotFoundError,
+    TenantResolutionError,
+)
 
-_tenant_resolver = HeaderTenantResolver()
+_api_key_resolver = ApiKeyTenantResolver()
 
 # Declared security schemes so Swagger UI shows an Authorize button and
-# sends the Authorization header. The actual token validation lives in
+# sends the respective credentials. The actual validation lives in
 # ``get_authenticated_tenant`` / ``get_authenticated_user``; these
 # dependencies only advertise the schemes in OpenAPI (auto_error=False so
 # they never short-circuit the dedicated auth dependencies).
-tenant_bearer = HTTPBearer(
+tenant_api_key_header = APIKeyHeader(
+    name="X-AuthX-API-Key",
     scheme_name="TenantAPIKey",
-    description="Bearer Tenant API Token (from POST /api/v1/auth/tenant/login).",
+    description="Tenant API Key (e.g. ax_test_tenant_a_mock_key).",
     auto_error=False,
 )
+tenant_bearer = tenant_api_key_header
+
 user_bearer = HTTPBearer(
     scheme_name="UserAccessToken",
     description="Bearer User Access Token (from POST /api/v1/auth/users/login).",
@@ -40,15 +47,10 @@ user_bearer = HTTPBearer(
 
 async def get_tenant_context(
     db: Annotated[AsyncSession, Depends(get_db_session)],
-    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
+    x_authx_api_key: Annotated[str | None, Header(alias="X-AuthX-API-Key")] = None,
 ) -> TenantContext:
-    """Resolve the current tenant for a request.
-
-    Development bootstrap: reads ``X-Tenant-Id`` and validates it against
-    the database. Phase 3 replaces this with resolution from the
-    authenticated principal so client-supplied tenant ids are never trusted.
-    """
-    return await _tenant_resolver.resolve(db, x_tenant_id)
+    """Resolve the current tenant for a request via X-AuthX-API-Key."""
+    return await get_authenticated_tenant(db=db, x_authx_api_key=x_authx_api_key)
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -70,44 +72,31 @@ def _bearer_token(authorization: str | None) -> str:
 
 async def get_authenticated_tenant(
     db: Annotated[AsyncSession, Depends(get_db_session)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    x_authx_api_key: Annotated[str | None, Header(alias="X-AuthX-API-Key")] = None,
 ) -> TenantContext:
-    """Authenticate a Tenant API Token and return its ``TenantContext``.
+    """Authenticate a Tenant API Key and return its ``TenantContext``.
 
-    The trusted tenant identity comes ONLY from the token (``tenant_id``
-    claim); ``X-Tenant-Id`` is never consulted here. The token signature and
-    expiration are validated, the principal type must be ``tenant``, and the
-    tenant must still exist in the database.
+    The trusted tenant identity comes ONLY from the resolved API key;
+    client-supplied parameters or tenant_ids from body/query/arbitrary headers
+    are never trusted.
     """
-    token = _bearer_token(authorization)
-    settings = get_settings()
+    if not x_authx_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+        )
     try:
-        claims = decode_tenant_api_token(
-            token,
-            secret=settings.tenant_api_token_secret,
-            algorithm=settings.tenant_api_token_algorithm,
-        )
-    except ExpiredTokenError as exc:
+        return await _api_key_resolver.resolve(db, x_authx_api_key)
+    except MissingApiKeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail="Missing API key",
         ) from exc
-    except (InvalidTokenError, InvalidPrincipalTypeError) as exc:
+    except (InvalidApiKeyError, TenantNotFoundError, TenantResolutionError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail="Invalid API key",
         ) from exc
-
-    tenant = await TenantRepository(db).get_by_id(claims.tenant_id)
-    if tenant is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return TenantContext.from_tenant(tenant)
 
 
 async def get_authenticated_user(

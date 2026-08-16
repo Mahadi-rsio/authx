@@ -27,6 +27,9 @@ REGISTER_URL = "/api/v1/auth/users/register"
 LOGIN_URL = "/api/v1/auth/users/login"
 ME_URL = "/api/v1/auth/users/me"
 
+TENANT_A_KEY = "ax_test_tenant_a_mock_key"
+TENANT_B_KEY = "ax_test_tenant_b_mock_key"
+
 
 @pytest.fixture()
 async def seeded_session(db_session):
@@ -62,18 +65,6 @@ async def _tenants(session) -> tuple[TenantContext, TenantContext]:
     return TenantContext.from_tenant(tenant_a), TenantContext.from_tenant(tenant_b)
 
 
-async def _tenant_token(session, tenant_id: UUID) -> str:
-    service = TenantService(session)
-    tenant = await service.get_tenant(tenant_id)
-    assert tenant is not None
-    principal = TenantPrincipal(tenant_id=tenant.id, email=f"{tenant.slug}@example.com")
-    return create_tenant_api_token(
-        principal,
-        secret=_settings().tenant_api_token_secret,
-        algorithm=_settings().tenant_api_token_algorithm,
-    )
-
-
 async def _user_token(session, *, user_id: UUID, tenant_id: UUID, **overrides) -> str:
     principal = UserPrincipal(user_id=user_id, tenant_id=tenant_id, email="alice@example.com")
     return create_user_access_token(
@@ -84,54 +75,60 @@ async def _user_token(session, *, user_id: UUID, tenant_id: UUID, **overrides) -
     )
 
 
-async def _register(client, token: str, *, email: str, name: str, password: str) -> httpx.Response:
+async def _register(
+    client,
+    api_key: str = TENANT_A_KEY,
+    *,
+    email: str,
+    name: str,
+    password: str,
+) -> httpx.Response:
     return await client.post(
         REGISTER_URL,
         json={"email": email, "name": name, "password": password},
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"X-AuthX-API-Key": api_key},
     )
 
 
 class TestRegister:
-    async def test_requires_tenant_api_token(self, client) -> None:
+    async def test_requires_tenant_api_key(self, client) -> None:
         response = await client.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
         )
         assert response.status_code == 401
 
-    async def test_invalid_tenant_token_rejected(self, client) -> None:
+    async def test_invalid_tenant_key_rejected(self, client) -> None:
         response = await client.post(
             REGISTER_URL,
             json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
-            headers={"Authorization": "Bearer not-a-jwt"},
+            headers={"X-AuthX-API-Key": "not-a-valid-key"},
         )
         assert response.status_code == 401
 
-    async def test_user_token_rejected_for_registration(self, client, seeded_session) -> None:
+    async def test_bearer_token_not_used_for_tenant_registration(
+        self, client, seeded_session
+    ) -> None:
         ctx_a, _ = await _tenants(seeded_session)
         alice = await UserService(seeded_session).create_user(
             ctx_a, email="alice@example.com", name="Alice"
         )
         user_token = await _user_token(seeded_session, user_id=alice.id, tenant_id=ctx_a.tenant_id)
-        response = await _register(
-            client,
-            user_token,
-            email="bob@example.com",
-            name="Bob",
-            password="BobPassword123!",
+        response = await client.post(
+            REGISTER_URL,
+            json={"email": "bob@example.com", "name": "Bob", "password": "BobPassword123!"},
+            headers={"Authorization": f"Bearer {user_token}"},
         )
         assert response.status_code == 401
 
-    async def test_register_with_tenant_a_token_creates_user_in_a(
+    async def test_register_with_tenant_a_key_creates_user_in_a(
         self, client, seeded_session
     ) -> None:
         ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
 
         response = await _register(
             client,
-            token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
@@ -149,7 +146,6 @@ class TestRegister:
 
     async def test_tenant_id_in_body_is_ignored(self, client, seeded_session) -> None:
         ctx_a, ctx_b = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
 
         response = await client.post(
             REGISTER_URL,
@@ -159,7 +155,7 @@ class TestRegister:
                 "name": "Alice",
                 "password": "AlicePassword123!",
             },
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
         assert response.status_code == 201
         assert UUID(response.json()["tenant_id"]) == ctx_a.tenant_id
@@ -170,12 +166,9 @@ class TestRegister:
         assert user_b is None
 
     async def test_duplicate_email_same_tenant_rejected(self, client, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
-
         first = await _register(
             client,
-            token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
@@ -184,7 +177,7 @@ class TestRegister:
 
         second = await _register(
             client,
-            token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
@@ -193,19 +186,17 @@ class TestRegister:
 
     async def test_same_email_across_tenants_allowed(self, client, seeded_session) -> None:
         ctx_a, ctx_b = await _tenants(seeded_session)
-        token_a = await _tenant_token(seeded_session, ctx_a.tenant_id)
-        token_b = await _tenant_token(seeded_session, ctx_b.tenant_id)
 
         in_a = await _register(
             client,
-            token_a,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
         )
         in_b = await _register(
             client,
-            token_b,
+            TENANT_B_KEY,
             email="alice@example.com",
             name="Alice",
             password="DifferentPassword123!",
@@ -215,12 +206,9 @@ class TestRegister:
         assert in_a.json()["id"] != in_b.json()["id"]
 
     async def test_email_is_normalized_lowercase(self, client, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
-
         response = await _register(
             client,
-            token,
+            TENANT_A_KEY,
             email="ALICE@Example.COM",
             name="Alice",
             password="AlicePassword123!",
@@ -230,21 +218,20 @@ class TestRegister:
 
 
 class TestLogin:
-    async def _create_alice(self, client, token, password: str) -> None:
+    async def _create_alice(self, client, api_key: str, password: str) -> None:
         response = await _register(
-            client, token, email="alice@example.com", name="Alice", password=password
+            client, api_key, email="alice@example.com", name="Alice", password=password
         )
         assert response.status_code == 201
 
     async def test_login_with_correct_password_succeeds(self, client, seeded_session) -> None:
         ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
-        await self._create_alice(client, token, "AlicePassword123!")
+        await self._create_alice(client, TENANT_A_KEY, "AlicePassword123!")
 
         response = await client.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "AlicePassword123!"},
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
         assert response.status_code == 200
         body = response.json()
@@ -262,22 +249,18 @@ class TestLogin:
         assert claims.token_id
 
     async def test_login_with_wrong_password_rejected(self, client, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
-        await self._create_alice(client, token, "AlicePassword123!")
+        await self._create_alice(client, TENANT_A_KEY, "AlicePassword123!")
 
         response = await client.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "wrong-password"},
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
         assert response.status_code == 401
         assert "access_token" not in response.json()
 
-    async def test_login_requires_tenant_api_token(self, client, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
-        await self._create_alice(client, token, "AlicePassword123!")
+    async def test_login_requires_tenant_api_key(self, client, seeded_session) -> None:
+        await self._create_alice(client, TENANT_A_KEY, "AlicePassword123!")
 
         response = await client.post(
             LOGIN_URL, json={"email": "alice@example.com", "password": "AlicePassword123!"}
@@ -285,57 +268,52 @@ class TestLogin:
         assert response.status_code == 401
 
     async def test_login_is_scoped_to_authenticated_tenant(self, client, seeded_session) -> None:
-        ctx_a, ctx_b = await _tenants(seeded_session)
-        token_a = await _tenant_token(seeded_session, ctx_a.tenant_id)
-        token_b = await _tenant_token(seeded_session, ctx_b.tenant_id)
-
-        await self._create_alice(client, token_a, "AlicePassword123!")
-        await self._create_alice(client, token_b, "DifferentPassword123!")
+        await self._create_alice(client, TENANT_A_KEY, "AlicePassword123!")
+        await self._create_alice(client, TENANT_B_KEY, "DifferentPassword123!")
 
         # Correct credentials only authenticate within the owning tenant.
         response = await client.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "DifferentPassword123!"},
-            headers={"Authorization": f"Bearer {token_a}"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
         assert response.status_code == 401
 
         response = await client.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "AlicePassword123!"},
-            headers={"Authorization": f"Bearer {token_b}"},
+            headers={"X-AuthX-API-Key": TENANT_B_KEY},
         )
         assert response.status_code == 401
 
         response = await client.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "DifferentPassword123!"},
-            headers={"Authorization": f"Bearer {token_b}"},
+            headers={"X-AuthX-API-Key": TENANT_B_KEY},
         )
         assert response.status_code == 200
 
 
 class TestUsersMe:
-    async def _login_token(self, client, tenant_token: str) -> str:
+    async def _login_token(self, client, api_key: str = TENANT_A_KEY) -> str:
         response = await client.post(
             LOGIN_URL,
             json={"email": "alice@example.com", "password": "AlicePassword123!"},
-            headers={"Authorization": f"Bearer {tenant_token}"},
+            headers={"X-AuthX-API-Key": api_key},
         )
         assert response.status_code == 200
         return response.json()["access_token"]
 
     async def test_users_me_returns_authenticated_user(self, client, seeded_session) -> None:
         ctx_a, _ = await _tenants(seeded_session)
-        tenant_token = await _tenant_token(seeded_session, ctx_a.tenant_id)
         await _register(
             client,
-            tenant_token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
         )
-        user_token = await self._login_token(client, tenant_token)
+        user_token = await self._login_token(client, TENANT_A_KEY)
 
         response = await client.get(ME_URL, headers={"Authorization": f"Bearer {user_token}"})
         assert response.status_code == 200
@@ -345,11 +323,8 @@ class TestUsersMe:
         assert body["email_verified"] is False
         assert UUID(body["tenant_id"]) == ctx_a.tenant_id
 
-    async def test_tenant_api_token_rejected_for_users_me(self, client, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        tenant_token = await _tenant_token(seeded_session, ctx_a.tenant_id)
-
-        response = await client.get(ME_URL, headers={"Authorization": f"Bearer {tenant_token}"})
+    async def test_api_key_header_alone_rejected_for_users_me(self, client, seeded_session) -> None:
+        response = await client.get(ME_URL, headers={"X-AuthX-API-Key": TENANT_A_KEY})
         assert response.status_code == 401
 
     async def test_invalid_user_token_rejected(self, client) -> None:
@@ -358,10 +333,9 @@ class TestUsersMe:
 
     async def test_expired_user_token_rejected(self, client, seeded_session) -> None:
         ctx_a, _ = await _tenants(seeded_session)
-        tenant_token = await _tenant_token(seeded_session, ctx_a.tenant_id)
         await _register(
             client,
-            tenant_token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
@@ -379,10 +353,9 @@ class TestUsersMe:
 
     async def test_user_token_tenant_mismatch_rejected(self, client, seeded_session) -> None:
         ctx_a, ctx_b = await _tenants(seeded_session)
-        tenant_token = await _tenant_token(seeded_session, ctx_a.tenant_id)
         await _register(
             client,
-            tenant_token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
@@ -409,7 +382,12 @@ class TestGetAuthenticatedUser:
 
     async def test_tenant_token_rejected_by_user_dependency(self, seeded_session) -> None:
         ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
+        principal = TenantPrincipal(tenant_id=ctx_a.tenant_id, email="tenant-a@example.com")
+        token = create_tenant_api_token(
+            principal,
+            secret=_settings().tenant_api_token_secret,
+            algorithm=_settings().tenant_api_token_algorithm,
+        )
         with pytest.raises(HTTPException) as exc_info:
             await get_authenticated_user(db=seeded_session, authorization=f"Bearer {token}")
         assert exc_info.value.status_code == 401
@@ -422,11 +400,9 @@ class TestGetAuthenticatedUser:
 
 class TestPasswordStorage:
     async def test_plaintext_password_never_stored(self, client, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
         await _register(
             client,
-            token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",
@@ -444,11 +420,9 @@ class TestPasswordStorage:
     ) -> None:
         from app.auth.passwords import verify_password
 
-        ctx_a, _ = await _tenants(seeded_session)
-        token = await _tenant_token(seeded_session, ctx_a.tenant_id)
         await _register(
             client,
-            token,
+            TENANT_A_KEY,
             email="alice@example.com",
             name="Alice",
             password="AlicePassword123!",

@@ -46,118 +46,56 @@ GET /health
 { "status": "error", "version": "0.1.0", "checks": { "database": "error", "redis": "ok" } }
 ```
 
-## Tenant identification (development)
+## Tenant authentication (Development API Keys)
 
-Protected endpoints (Phase 3) will resolve the current tenant via the
-`get_tenant_context` dependency. In development the tenant is resolved from the
-`X-Tenant-Id` header and validated against the database.
-
-```http
-X-Tenant-Id: <tenant-uuid>
-```
-
-This is a **development bootstrap only** and is replaced by authenticated
-resolution in Phase 3 — client-supplied tenant ids are never trusted blindly.
-
-## Tenant API Token (development only)
-
-Authenticates a **tenant** (not a user) and is required for tenant-level
-operations such as user registration. This is a development-only
-mechanism; nothing is seeded in production.
-
-### POST /api/v1/auth/tenant/login
-
-Authenticates a development tenant by email + password and returns a
-**Tenant API Token**.
-
-Request body: `TenantLoginRequest`
-
-| Field      | Type     | Description                     |
-| ---------- | -------- | ------------------------------- |
-| `email`    | `string` | Tenant login email              |
-| `password` | `string` | Tenant login password           |
-
-Response: `TokenResponse`
-
-| Field          | Type     | Description             |
-| -------------- | -------- | ----------------------- |
-| `access_token` | `string` | Signed Tenant API Token |
-| `token_type`   | `"bearer"` | Always `bearer`       |
+Tenant authentication identifies and authenticates a **tenant** (not a user)
+and is required for tenant-level operations such as user registration and user
+login. In development, tenant authentication is performed using mock API keys
+via the `X-AuthX-API-Key` header:
 
 ```http
-POST /api/v1/auth/tenant/login
-Content-Type: application/json
-
-{ "email": "tenant-a@example.com", "password": "TenantA123!" }
+X-AuthX-API-Key: ax_test_tenant_a_mock_key
 ```
 
-```json
-{ "access_token": "eyJhbGciOiJIUzI1NiIs...", "token_type": "bearer" }
-```
+### Mock API keys (development only)
 
-#### Errors
+| Tenant   | Email                    | Password      | Slug      | Mock API Key                  |
+| -------- | ------------------------ | ------------- | --------- | ----------------------------- |
+| Tenant A | `tenant-a@example.com`   | `TenantA123!` | `tenant-a`| `ax_test_tenant_a_mock_key`   |
+| Tenant B | `tenant-b@example.com`   | `TenantB123!` | `tenant-b`| `ax_test_tenant_b_mock_key`   |
 
-| Status | Body detail               | Condition                        |
-| ------ | ------------------------- | -------------------------------- |
-| `401`  | `"Invalid email or password"` | Unknown tenant or wrong password |
+Mock credentials and API keys are active only when `APP_ENV=development` and
+are **never active in production**.
 
-Both failures return the same body to avoid tenant enumeration.
-
-### Using a Tenant API Token
+### Using a Tenant API Key
 
 Protected tenant endpoints use the `get_authenticated_tenant` dependency,
-which validates the token signature and expiration, requires
-`principal_type == "tenant"`, and loads the tenant before returning a
-`TenantContext`.
+which validates the API key in the `X-AuthX-API-Key` header and resolves
+the `TenantContext`.
 
 ```http
-Authorization: Bearer <tenant-api-token>
+X-AuthX-API-Key: <api-key>
 ```
 
-The trusted tenant identity comes **only** from the token. `X-Tenant-Id` is
-never trusted as the authenticated identity — sending a different
-`X-Tenant-Id` does not change the tenant in a valid token.
-
-### Token claims
-
-| Claim            | Type     | Description                                  |
-| ---------------- | -------- | -------------------------------------------- |
-| `sub`            | `string` | Tenant principal id (same as `tenant_id`)    |
-| `principal_type` | `"tenant"` | Marks this as a tenant token             |
-| `tenant_id`      | `string` | Trusted tenant UUID                          |
-| `iat`            | `number` | Issued-at unix timestamp                     |
-| `exp`            | `number` | Expiration unix timestamp                    |
-| `jti`            | `string` | Token/session identifier (random UUID)       |
-
-### Mock credentials (development)
-
-| Tenant   | Email                  | Password      |
-| -------- | ---------------------- | ------------- |
-| Tenant A | `tenant-a@example.com` | `TenantA123!` |
-| Tenant B | `tenant-b@example.com` | `TenantB123!` |
-
-Passwords are stored as Argon2id hashes only; configurable via
-`DEV_TENANT_CREDENTIALS`.
+The trusted tenant identity comes **only** from the API key. `tenant_id` in the
+request body or query parameters is never trusted.
 
 ## User authentication (real credentials)
 
 Users authenticate with a real email + password stored as an Argon2id hash
-in `password_credentials`. There are two strictly separated token types:
+in `password_credentials`. There are two strictly separated authentication types:
 
-- **Tenant API Token** (`principal_type="tenant"`) — authenticates a tenant;
+- **Tenant API Key** (`X-AuthX-API-Key`) — authenticates a tenant;
   required for tenant-level operations including user registration and user
   login.
 - **User Access Token** (`principal_type="user"`) — authenticates an
   individual user; required for user-protected endpoints.
 
-A Tenant API Token is **never** accepted by user-protected endpoints and a
-User Access Token is **never** accepted by tenant-level endpoints.
-
 ### POST /api/v1/auth/users/register
 
 Registers a user **inside the authenticated tenant**. Requires a valid
-**Tenant API Token** — the tenant comes ONLY from the token; a `tenant_id`
-in the request body is ignored.
+**Tenant API Key** via `X-AuthX-API-Key` — the tenant comes ONLY from the key;
+a `tenant_id` in the request body is ignored.
 
 Request body: `UserRegisterRequest`
 
@@ -169,7 +107,7 @@ Request body: `UserRegisterRequest`
 
 ```http
 POST /api/v1/auth/users/register
-Authorization: Bearer <tenant-api-token>
+X-AuthX-API-Key: ax_test_tenant_a_mock_key
 Content-Type: application/json
 
 { "email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!" }
@@ -180,7 +118,7 @@ Response `201`: `UserResponse`
 | Field            | Type      | Description                   |
 | ---------------- | --------- | ----------------------------- |
 | `id`             | `string`  | User UUID                     |
-| `tenant_id`      | `string`  | Owning tenant UUID (from the token) |
+| `tenant_id`      | `string`  | Owning tenant UUID (from API key) |
 | `email`          | `string`  | Normalized lowercase email    |
 | `name`           | `string`  | Display name                  |
 | `email_verified` | `boolean` | Always `false` at registration |
@@ -189,13 +127,13 @@ Response `201`: `UserResponse`
 
 | Status | Detail                                     | Condition                              |
 | ------ | ------------------------------------------ | -------------------------------------- |
-| `401`  | `"Invalid token"` / `"Token has expired"`  | Missing/invalid/expired Tenant API Token |
+| `401`  | `"Missing API key"` / `"Invalid API key"`  | Missing or invalid `X-AuthX-API-Key`   |
 | `409`  | `"A user with this email already exists in this tenant"` | Duplicate email in the same tenant |
 
 ### POST /api/v1/auth/users/login
 
 Authenticates a user **within the authenticated tenant** and issues a
-**User Access Token**. Requires a valid **Tenant API Token** so the email
+**User Access Token**. Requires a valid **Tenant API Key** so the email
 lookup is scoped to one tenant (the same email can exist independently in
 different tenants).
 
@@ -208,7 +146,7 @@ Request body: `UserLoginRequest`
 
 ```http
 POST /api/v1/auth/users/login
-Authorization: Bearer <tenant-api-token>
+X-AuthX-API-Key: ax_test_tenant_a_mock_key
 Content-Type: application/json
 
 { "email": "alice@example.com", "password": "AlicePassword123!" }
@@ -226,7 +164,7 @@ Response: `TokenResponse`
 | Status | Body detail               | Condition                        |
 | ------ | ------------------------- | -------------------------------- |
 | `401`  | `"Invalid email or password"` | Unknown user (in this tenant) or wrong password |
-| `401`  | `"Invalid token"` | Missing/invalid Tenant API Token |
+| `401`  | `"Missing API key"` / `"Invalid API key"` | Missing or invalid `X-AuthX-API-Key` |
 
 ### User Access Token claims
 
@@ -242,8 +180,7 @@ Response: `TokenResponse`
 
 ### GET /api/v1/auth/users/me
 
-Returns the authenticated user. Requires a valid **User Access Token** (a
-Tenant API Token is rejected).
+Returns the authenticated user. Requires a valid **User Access Token**.
 
 ```http
 GET /api/v1/auth/users/me
@@ -270,15 +207,15 @@ Response `200`: `UserResponse`
 
 ## Example: end-to-end
 
-1. `POST /api/v1/auth/tenant/login` with `tenant-a@example.com` /
-   `TenantA123!` → **Tenant API Token**.
-2. `POST /api/v1/auth/users/register` (Bearer tenant token) → creates
-   `alice@example.com` under Tenant A with a hashed password.
-3. `POST /api/v1/auth/users/login` (Bearer tenant token) → **User Access
-   Token**.
-4. `GET /api/v1/auth/users/me` (Bearer user token) → Alice's profile.
+1. `POST /api/v1/auth/users/register` (`X-AuthX-API-Key: ax_test_tenant_a_mock_key`)
+   → creates `alice@example.com` under Tenant A with a hashed password.
+2. `POST /api/v1/auth/users/login` (`X-AuthX-API-Key: ax_test_tenant_a_mock_key`)
+   → **User Access Token**.
+3. `GET /api/v1/auth/users/me` (`Authorization: Bearer <user-access-token>`)
+   → Alice's profile.
 
 ## Planned routes (Phase 4+)
 
+- Real tenant dashboard & API key creation/management.
 - Password reset and email verification.
-- OAuth providers, magic links, API keys, refresh tokens, advanced sessions.
+- OAuth providers, magic links, refresh tokens, advanced sessions.

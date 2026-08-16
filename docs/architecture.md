@@ -40,72 +40,61 @@ Two layers of enforcement, defense in depth:
 the resolved `tenant_id` (and optional slug). It is **never constructed from
 raw client input**; it is produced by a `TenantResolver`.
 
-`HeaderTenantResolver` (`app/tenants/resolver.py`) resolves the tenant from the
-`X-Tenant-Id` header, parses it, and validates it against the database before
-returning a context. This is a **development bootstrap** only — Phase 3
-replaces it with resolution from the authenticated principal so that
-client-supplied tenant ids are never trusted.
+`MockApiKeyTenantResolver` (`app/tenants/resolver.py`) resolves the tenant from
+the `X-AuthX-API-Key` header, matches it against development mock tenant
+credentials in settings, and validates against the database before returning
+a `TenantContext`.
 
-## Tenant authentication (development)
+## Tenant authentication (development mock API keys)
 
-A **development-only** tenant authentication system mints **Tenant API
-Tokens** (signed JWTs). A tenant token is distinct from a user access token:
-it represents an authenticated *tenant* and is required for tenant-level
-operations such as user registration.
+A **development-only** tenant authentication system validates **Tenant API
+Keys** via `X-AuthX-API-Key`. An API key represents an authenticated *tenant*
+and is required for tenant-level operations such as user registration and
+login.
 
 ### Flow
 
 ```
-mock tenant credentials
+X-AuthX-API-Key
         ↓
-TenantAuthService.authenticate(email, password)   (Argon2id verify)
+MockApiKeyTenantResolver.resolve(api_key)   (matches dev mock credentials)
         ↓
-TenantPrincipal                                    (authenticated tenant)
+TenantRepository.get_by_slug(...)            (database load)
         ↓
-TenantAuthService.issue_api_token(...)             (signed Tenant API Token)
-        ↓
-get_authenticated_tenant() dependency              (validate token)
+get_authenticated_tenant() dependency        (returns TenantContext)
         ↓
 TenantContext
 ```
 
 ### Components
 
-- `app/auth/passwords.py` — Argon2id hashing via `pwdlib`. Plaintext
-  passwords are never stored or exposed.
-- `app/auth/principal.py` — `TenantPrincipal`, the authenticated tenant
-  value object returned by the service.
-- `app/auth/tokens.py` — `create_tenant_api_token` / `decode_tenant_api_token`
-  (HS256 JWT). Claims: `sub`, `principal_type="tenant"`, `tenant_id`, `iat`,
-  `exp`, `jti`.
-- `app/models/tenant_credential.py` — `tenant_credentials` table
-  (one-to-one with tenants, email unique, Argon2id `password_hash` only).
-- `app/repositories/tenant_credential.py` — credential lookup by email.
-- `app/services/tenant_auth_service.py` — authenticate, issue tokens,
-  create credentials (transaction boundary).
+- `app/tenants/resolver.py` — `MockApiKeyTenantResolver` (resolves mock API keys
+  in development, disabled in production).
+- `app/tenants/context.py` — `TenantContext`, the frozen tenant context.
+- `app/core/config.py` — `DevTenantCredential` (with `api_key`) and
+  `dev_tenant_credentials`.
 - `app/services/dev_seed.py` — idempotent development seed of mock tenants
   and credentials; refuses to run when not in development.
-- `app/api/auth.py` — `POST /api/v1/auth/tenant/login`.
-- `app/api/dependencies.py` — `get_authenticated_tenant`.
+- `app/api/dependencies.py` — `get_authenticated_tenant` (uses `X-AuthX-API-Key`).
+- `app/api/auth.py` — `POST /api/v1/auth/users/register`,
+  `POST /api/v1/auth/users/login`.
 
 ### Trust boundary
 
-The trusted tenant identity comes **only** from the Tenant API Token
-(`tenant_id` claim) and flows to `TenantContext`. `X-Tenant-Id` is never
-consulted by `get_authenticated_tenant`, so a request that supplies a
-different `X-Tenant-Id` header still resolves to the token's tenant.
+The trusted tenant identity comes **only** from the resolved API key
+and flows to `TenantContext`. Client-supplied `tenant_id` from request body,
+query params, or arbitrary headers is never trusted.
 
 ### User authentication (real credentials)
 
 Users authenticate with a real email + password stored as an Argon2id hash.
-A **User Access Token** (signed JWT) is distinct from a Tenant API Token: it
-represents an authenticated *user within a tenant* and is required for
-user-protected endpoints such as `/users/me`.
+A **User Access Token** (signed JWT) represents an authenticated *user within a tenant*
+and is required for user-protected endpoints such as `/users/me`.
 
 ### Flow
 
 ```
-Tenant API Token (authenticated tenant)
+Tenant API Key (X-AuthX-API-Key)
         ↓
 UserAuthService.register_user(context, email, name, password)  (Argon2id hash)
         ↓
@@ -129,7 +118,7 @@ UserContext
 - `app/auth/tokens.py` — `create_user_access_token` /
   `decode_user_access_token` (HS256 JWT). Claims: `sub`, `principal_type="user"`,
   `user_id`, `tenant_id`, `iat`, `exp`, `jti`. `principal_type` is validated
-  strictly for both token types.
+  strictly.
 - `app/models/password_credential.py` — `password_credentials` table
   (one per user per tenant, Argon2id `password_hash` only, composite FK
   `(tenant_id, user_id) -> users(tenant_id, id)`).
@@ -145,10 +134,9 @@ UserContext
 
 The trusted user and tenant identity comes **only** from the User Access
 Token (`user_id`/`tenant_id` claims) and is verified against the database:
-the user must still exist and belong to the claimed tenant. `X-Tenant-Id` is
-never consulted. Registration and login derive the tenant ONLY from the
-authenticated Tenant API Token; a `tenant_id` in the request body is
-ignored.
+the user must still exist and belong to the claimed tenant. Registration and
+login derive the tenant ONLY from the authenticated Tenant API Key; a
+`tenant_id` in the request body is ignored.
 
 ## Development seeding
 
@@ -163,7 +151,7 @@ seeded in production.
 ```
 HTTP request
   └─ get_db_session (app/database/session.py)
-  └─ get_authenticated_tenant (from Tenant API Token)
+  └─ get_authenticated_tenant (from X-AuthX-API-Key)
        └─ Service method receives TenantContext
             └─ Repository filters by context.tenant_id
                  └─ AsyncSession -> PostgreSQL
@@ -198,9 +186,9 @@ FastAPI lifespan on shutdown.
 
 ## Phase 3 (planned / partial)
 
-1. ✅ Tenant authentication (development-only) — Argon2id password hashing, a
-   tenant credential store, Tenant API Token issuance, and authenticated
-   tenant resolution via `get_authenticated_tenant`.
+1. ✅ Tenant authentication (development mock API keys) — `X-AuthX-API-Key`
+   header lookup, `MockApiKeyTenantResolver`, and authenticated tenant
+   resolution via `get_authenticated_tenant`.
 2. ✅ User registration and user email/password login — real
    `password_credentials` (Argon2id), User Access Tokens, and
    `get_authenticated_user`.

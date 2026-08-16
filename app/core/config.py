@@ -15,6 +15,7 @@ class DevTenantCredential(BaseModel):
     password: str
     name: str
     slug: str
+    api_key: str | None = None
 
 
 class Settings(BaseSettings):
@@ -55,7 +56,7 @@ class Settings(BaseSettings):
     user_access_token_expire_minutes: int = 60
 
     # Development-only mock tenant credentials used by the seed/bootstrap
-    # logic. Override as a JSON array, e.g.:
+    # logic and mock API key resolver. Override as a JSON array, e.g.:
     #   DEV_TENANT_CREDENTIALS='[{"email":"a@example.com","password":"..",...}]'
     dev_tenant_credentials: list[DevTenantCredential] = [
         DevTenantCredential(
@@ -63,12 +64,14 @@ class Settings(BaseSettings):
             password="TenantA123!",
             name="Tenant A",
             slug="tenant-a",
+            api_key="ax_test_tenant_a_mock_key",
         ),
         DevTenantCredential(
             email="tenant-b@example.com",
             password="TenantB123!",
             name="Tenant B",
             slug="tenant-b",
+            api_key="ax_test_tenant_b_mock_key",
         ),
     ]
 

@@ -71,64 +71,48 @@ database operation filters by it. Cross-tenant identity↔user links are
 rejected at the database level by a composite foreign key. See
 [architecture.md](docs/architecture.md) and [database.md](docs/database.md).
 
-## Tenant API Token
+## Tenant authentication (Development API Keys)
 
-**Development-only tenant authentication.**
+**Development-only mock tenant authentication.**
 
-A **Tenant API Token** represents an authenticated *tenant* (not a user). It
-is required for tenant-level operations — most importantly **user
-registration** — and is issued by:
-
-```
-POST /api/v1/auth/tenant/login
-```
+Tenant authentication represents an authenticated *tenant* (not a user) and is
+required for tenant-level operations — most importantly **user registration** and
+**user login**. In development, tenant authentication is performed using a mock
+API key sent via the `X-AuthX-API-Key` header:
 
 ```http
-POST /api/v1/auth/tenant/login
-Content-Type: application/json
-
-{ "email": "tenant-a@example.com", "password": "TenantA123!" }
-```
-
-```json
-{ "access_token": "...", "token_type": "bearer" }
+X-AuthX-API-Key: ax_test_tenant_a_mock_key
 ```
 
 ### Key points
 
-- A Tenant API Token is **NOT** a user access token. User Access Tokens are
+- A Tenant API Key is **NOT** a user access token. User Access Tokens are
   issued only after a real user email/password login and contain
   `user_id` + `tenant_id`.
-- The trusted tenant identity comes **only** from the token. Protected
-  tenant endpoints must use `get_authenticated_tenant` (a FastAPI
-  dependency) — `X-Tenant-Id` is never trusted as the authenticated
-  identity, and supplying a different `X-Tenant-Id` cannot change the
-  tenant in a valid token.
-- Tokens are signed JWTs (`HS256`) with claims `sub`, `principal_type`,
-  `tenant_id`, `iat`, `exp`, and `jti` (`principal_type` is `"tenant"` for
-  Tenant API Tokens and `"user"` for User Access Tokens, which also carry
-  `user_id`). The two types are validated strictly and are never
-  interchangeable. See [docs/architecture.md](docs/architecture.md).
-- Development-only; mock tenants are seeded only when `APP_ENV=development`.
+- The trusted tenant identity comes **only** from the API key resolved via
+  `get_authenticated_tenant` (a FastAPI dependency). `X-Tenant-Id` or
+  body `tenant_id` fields are never trusted.
+- Development-only; mock tenant credentials and API keys are enabled only when
+  `APP_ENV=development`. Nothing is seeded or accepted in production.
 
 ## User email/password authentication
 
 Users register and log in with a real email + password stored as an
 Argon2id hash (plaintext never touches the database). Both registration and
-login require a Tenant API Token so the tenant comes **only** from the
-authenticated token.
+login require a Tenant API Key so the tenant comes **only** from the
+API key.
 
 ```
-POST /api/v1/auth/users/register      # Bearer <tenant-api-token>
-POST /api/v1/auth/users/login         # Bearer <tenant-api-token> -> User Access Token
-GET  /api/v1/auth/users/me            # Bearer <user-access-token>
+POST /api/v1/auth/users/register      # X-AuthX-API-Key: <api-key>
+POST /api/v1/auth/users/login         # X-AuthX-API-Key: <api-key> -> User Access Token
+GET  /api/v1/auth/users/me            # Authorization: Bearer <user-access-token>
 ```
 
 ### Example
 
 ```http
 POST /api/v1/auth/users/register
-Authorization: Bearer <tenant-api-token>
+X-AuthX-API-Key: ax_test_tenant_a_mock_key
 Content-Type: application/json
 
 { "email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!" }
@@ -136,7 +120,7 @@ Content-Type: application/json
 
 ```http
 POST /api/v1/auth/users/login
-Authorization: Bearer <tenant-api-token>
+X-AuthX-API-Key: ax_test_tenant_a_mock_key
 Content-Type: application/json
 
 { "email": "alice@example.com", "password": "AlicePassword123!" }
@@ -147,17 +131,22 @@ Content-Type: application/json
 ```
 
 The returned token is a **User Access Token** (`principal_type: "user"`) —
-use it for user-protected endpoints such as `GET /api/v1/auth/users/me`.
+use it for user-protected endpoints such as `GET /api/v1/auth/users/me`:
+
+```http
+GET /api/v1/auth/users/me
+Authorization: Bearer <user-access-token>
+```
+
 See [docs/api.md](docs/api.md) for the full reference.
 
 ### Mock tenant credentials (development only)
 
-| Tenant   | Email                    | Password      | Slug      |
-| -------- | ------------------------ | ------------- | --------- |
-| Tenant A | `tenant-a@example.com`   | `TenantA123!` | `tenant-a`|
-| Tenant B | `tenant-b@example.com`   | `TenantB123!` | `tenant-b`|
+| Tenant   | Email                    | Password      | Slug      | Mock API Key                  |
+| -------- | ------------------------ | ------------- | --------- | ----------------------------- |
+| Tenant A | `tenant-a@example.com`   | `TenantA123!` | `tenant-a`| `ax_test_tenant_a_mock_key`   |
+| Tenant B | `tenant-b@example.com`   | `TenantB123!` | `tenant-b`| `ax_test_tenant_b_mock_key`   |
 
 Credentials are configurable through `DEV_TENANT_CREDENTIALS` (JSON array
-of `{email, password, name, slug}`) and passwords are stored only as
-Argon2id hashes — plaintext never touches the database. These credentials
-are **never seeded in production**.
+of `{email, password, name, slug, api_key}`). Plaintext passwords never touch
+the database. These mock credentials and keys are **never active in production**.

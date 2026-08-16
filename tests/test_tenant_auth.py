@@ -1,4 +1,3 @@
-from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
 
@@ -6,21 +5,23 @@ import app.models  # noqa: F401  (registers tables on Base.metadata)
 import httpx
 import pytest
 from app.api.dependencies import get_authenticated_tenant, get_db_session
-from app.auth.principal import TenantPrincipal
-from app.auth.tokens import create_tenant_api_token, decode_tenant_api_token
+from app.auth.tokens import decode_user_access_token
 from app.core.config import get_settings
 from app.main import create_app
-from app.models.tenant_credential import TenantCredential
 from app.services.dev_seed import seed_dev_tenants
-from app.services.tenant_auth_service import TenantAuthService
 from app.services.tenant_service import TenantService
+from app.services.user_service import UserService
 from app.tenants.context import TenantContext
-from fastapi import Depends, Header, HTTPException
-from sqlalchemy import select
+from fastapi import Depends, HTTPException
 
 pytestmark = pytest.mark.integration
 
-LOGIN_URL = "/api/v1/auth/tenant/login"
+REGISTER_URL = "/api/v1/auth/users/register"
+LOGIN_URL = "/api/v1/auth/users/login"
+ME_URL = "/api/v1/auth/users/me"
+
+TENANT_A_KEY = "ax_test_tenant_a_mock_key"
+TENANT_B_KEY = "ax_test_tenant_b_mock_key"
 
 
 @pytest.fixture()
@@ -53,156 +54,263 @@ async def _tenants(session) -> tuple[TenantContext, TenantContext]:
     return TenantContext.from_tenant(tenant_a), TenantContext.from_tenant(tenant_b)
 
 
-def _settings():
-    return get_settings()
+class TestMockApiKeyTenantAuth:
+    """1. Tenant A mock API key authenticates Tenant A."""
 
+    async def test_tenant_a_mock_api_key_authenticates_tenant_a(
+        self, client, test_app, seeded_session
+    ) -> None:
+        ctx_a, _ = await _tenants(seeded_session)
 
-async def _tenant_principal(session, tenant_id: UUID) -> TenantPrincipal:
-    tenant = await TenantAuthService(session, _settings()).get_tenant(tenant_id)
-    assert tenant is not None
-    return TenantPrincipal(tenant_id=tenant.id, email=f"{tenant.slug}@example.com")
+        @test_app.get("/test/tenant-auth")
+        async def tenant_auth_endpoint(
+            tenant: Annotated[TenantContext, Depends(get_authenticated_tenant)],
+        ):
+            return {"tenant_id": str(tenant.tenant_id), "slug": tenant.slug}
 
+        response = await client.get("/test/tenant-auth", headers={"X-AuthX-API-Key": TENANT_A_KEY})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["tenant_id"] == str(ctx_a.tenant_id)
+        assert data["slug"] == "tenant-a"
 
-async def _token_for(session, tenant_id: UUID) -> str:
-    principal = await _tenant_principal(session, tenant_id)
-    return create_tenant_api_token(
-        principal,
-        secret=_settings().tenant_api_token_secret,
-        algorithm=_settings().tenant_api_token_algorithm,
-    )
+    """2. Tenant B mock API key authenticates Tenant B."""
 
+    async def test_tenant_b_mock_api_key_authenticates_tenant_b(
+        self, client, test_app, seeded_session
+    ) -> None:
+        _, ctx_b = await _tenants(seeded_session)
 
-class TestTenantLogin:
-    async def test_tenant_a_login_succeeds(self, client) -> None:
-        response = await client.post(
-            LOGIN_URL, json={"email": "tenant-a@example.com", "password": "TenantA123!"}
+        @test_app.get("/test/tenant-auth-b")
+        async def tenant_auth_endpoint(
+            tenant: Annotated[TenantContext, Depends(get_authenticated_tenant)],
+        ):
+            return {"tenant_id": str(tenant.tenant_id), "slug": tenant.slug}
+
+        response = await client.get(
+            "/test/tenant-auth-b", headers={"X-AuthX-API-Key": TENANT_B_KEY}
         )
         assert response.status_code == 200
+        data = response.json()
+        assert data["tenant_id"] == str(ctx_b.tenant_id)
+        assert data["slug"] == "tenant-b"
+
+    """3. Invalid API key returns 401."""
+
+    async def test_invalid_api_key_returns_401(self, client) -> None:
+        response = await client.post(
+            REGISTER_URL,
+            json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": "invalid_api_key_12345"},
+        )
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Invalid API key"
+
+    """4. Missing API key returns 401."""
+
+    async def test_missing_api_key_returns_401(self, client) -> None:
+        response = await client.post(
+            REGISTER_URL,
+            json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
+        )
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Missing API key"
+
+    """5. Tenant A API key creates users under Tenant A."""
+
+    async def test_tenant_a_api_key_creates_users_under_tenant_a(
+        self, client, seeded_session
+    ) -> None:
+        ctx_a, ctx_b = await _tenants(seeded_session)
+        response = await client.post(
+            REGISTER_URL,
+            json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
+        )
+        assert response.status_code == 201
         body = response.json()
+        assert body["email"] == "alice@example.com"
+        assert body["name"] == "Alice"
+        assert UUID(body["tenant_id"]) == ctx_a.tenant_id
+
+        # Verify in database
+        user_service = UserService(seeded_session)
+        user_a = await user_service.get_user_by_email(ctx_a, "alice@example.com")
+        user_b = await user_service.get_user_by_email(ctx_b, "alice@example.com")
+        assert user_a is not None
+        assert user_b is None
+
+    """6. Tenant B API key creates users under Tenant B."""
+
+    async def test_tenant_b_api_key_creates_users_under_tenant_b(
+        self, client, seeded_session
+    ) -> None:
+        ctx_a, ctx_b = await _tenants(seeded_session)
+        response = await client.post(
+            REGISTER_URL,
+            json={"email": "bob@example.com", "name": "Bob", "password": "BobPassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_B_KEY},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["email"] == "bob@example.com"
+        assert body["name"] == "Bob"
+        assert UUID(body["tenant_id"]) == ctx_b.tenant_id
+
+        # Verify in database
+        user_service = UserService(seeded_session)
+        user_a = await user_service.get_user_by_email(ctx_a, "bob@example.com")
+        user_b = await user_service.get_user_by_email(ctx_b, "bob@example.com")
+        assert user_a is None
+        assert user_b is not None
+
+    """7. Same email can exist in Tenant A and Tenant B."""
+
+    async def test_same_email_can_exist_in_tenant_a_and_tenant_b(
+        self, client, seeded_session
+    ) -> None:
+        ctx_a, ctx_b = await _tenants(seeded_session)
+        resp_a = await client.post(
+            REGISTER_URL,
+            json={"email": "alice@example.com", "name": "Alice A", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
+        )
+        resp_b = await client.post(
+            REGISTER_URL,
+            json={"email": "alice@example.com", "name": "Alice B", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_B_KEY},
+        )
+        assert resp_a.status_code == 201
+        assert resp_b.status_code == 201
+        assert resp_a.json()["id"] != resp_b.json()["id"]
+        assert UUID(resp_a.json()["tenant_id"]) == ctx_a.tenant_id
+        assert UUID(resp_b.json()["tenant_id"]) == ctx_b.tenant_id
+
+    """8. Tenant A API key cannot access Tenant B users."""
+
+    async def test_tenant_a_api_key_cannot_access_tenant_b_users(
+        self, client, seeded_session
+    ) -> None:
+        # Register user under Tenant B only
+        resp_b = await client.post(
+            REGISTER_URL,
+            json={"email": "bob@example.com", "name": "Bob B", "password": "BobPassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_B_KEY},
+        )
+        assert resp_b.status_code == 201
+
+        # Attempt to login under Tenant A with Tenant B user credentials
+        login_a = await client.post(
+            LOGIN_URL,
+            json={"email": "bob@example.com", "password": "BobPassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
+        )
+        assert login_a.status_code == 401
+
+        # Login under Tenant B succeeds
+        login_b = await client.post(
+            LOGIN_URL,
+            json={"email": "bob@example.com", "password": "BobPassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_B_KEY},
+        )
+        assert login_b.status_code == 200
+
+    """9. tenant_id in request body cannot override the API-key tenant."""
+
+    async def test_tenant_id_in_request_body_cannot_override_api_key_tenant(
+        self, client, seeded_session
+    ) -> None:
+        ctx_a, ctx_b = await _tenants(seeded_session)
+        response = await client.post(
+            REGISTER_URL,
+            json={
+                "tenant_id": str(ctx_b.tenant_id),
+                "email": "alice@example.com",
+                "name": "Alice",
+                "password": "AlicePassword123!",
+            },
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
+        )
+        assert response.status_code == 201
+        assert UUID(response.json()["tenant_id"]) == ctx_a.tenant_id
+
+        user_service = UserService(seeded_session)
+        user_a = await user_service.get_user_by_email(ctx_a, "alice@example.com")
+        user_b = await user_service.get_user_by_email(ctx_b, "alice@example.com")
+        assert user_a is not None
+        assert user_b is None
+
+    """10. Tenant API key does not produce a tenant JWT."""
+
+    async def test_tenant_api_key_does_not_produce_tenant_jwt(
+        self, client, test_app, seeded_session
+    ) -> None:
+        # Tenant authentication resolves directly to TenantContext without
+        # issuing or requiring a tenant JWT
+        context = await get_authenticated_tenant(db=seeded_session, x_authx_api_key=TENANT_A_KEY)
+        assert isinstance(context, TenantContext)
+        assert context.slug == "tenant-a"
+
+    """11. User login still produces the existing user access token."""
+
+    async def test_user_login_produces_user_access_token(self, client, seeded_session) -> None:
+        await client.post(
+            REGISTER_URL,
+            json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
+        )
+        login_resp = await client.post(
+            LOGIN_URL,
+            json={"email": "alice@example.com", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
+        )
+        assert login_resp.status_code == 200
+        body = login_resp.json()
         assert body["token_type"] == "bearer"
         assert body["access_token"]
 
-    async def test_tenant_b_login_succeeds(self, client) -> None:
-        response = await client.post(
-            LOGIN_URL, json={"email": "tenant-b@example.com", "password": "TenantB123!"}
+        settings = get_settings()
+        claims = decode_user_access_token(
+            body["access_token"],
+            secret=settings.user_access_token_secret,
+            algorithm=settings.user_access_token_algorithm,
         )
-        assert response.status_code == 200
-        assert response.json()["access_token"]
-
-    async def test_login_token_contains_tenant_identity(self, client, seeded_session) -> None:
+        assert claims.principal_type == "user"
         ctx_a, _ = await _tenants(seeded_session)
-        response = await client.post(
-            LOGIN_URL, json={"email": "tenant-a@example.com", "password": "TenantA123!"}
-        )
-        assert response.status_code == 200
-        claims = decode_tenant_api_token(
-            response.json()["access_token"],
-            secret=_settings().tenant_api_token_secret,
-            algorithm=_settings().tenant_api_token_algorithm,
-        )
-        assert claims.principal_type == "tenant"
         assert claims.tenant_id == ctx_a.tenant_id
-        assert claims.expires_at > claims.issued_at
-        assert claims.token_id
 
-    async def test_wrong_tenant_password_fails(self, client) -> None:
-        response = await client.post(
-            LOGIN_URL, json={"email": "tenant-a@example.com", "password": "wrong-password"}
-        )
-        assert response.status_code == 401
-        assert "access_token" not in response.json()
+    """12. User access token remains tenant-scoped."""
 
-    async def test_unknown_tenant_fails(self, client) -> None:
-        response = await client.post(
-            LOGIN_URL, json={"email": "nobody@example.com", "password": "whatever"}
-        )
-        assert response.status_code == 401
-        assert "access_token" not in response.json()
-
-
-class TestGetAuthenticatedTenant:
-    async def test_tenant_a_token_produces_tenant_a_context(self, seeded_session) -> None:
+    async def test_user_access_token_remains_tenant_scoped(self, client, seeded_session) -> None:
         ctx_a, _ = await _tenants(seeded_session)
-        token = await _token_for(seeded_session, ctx_a.tenant_id)
-        context = await get_authenticated_tenant(db=seeded_session, authorization=f"Bearer {token}")
-        assert context.tenant_id == ctx_a.tenant_id
-        assert context.slug == "tenant-a"
-
-    async def test_tenant_b_token_produces_tenant_b_context(self, seeded_session) -> None:
-        _, ctx_b = await _tenants(seeded_session)
-        token = await _token_for(seeded_session, ctx_b.tenant_id)
-        context = await get_authenticated_tenant(db=seeded_session, authorization=f"Bearer {token}")
-        assert context.tenant_id == ctx_b.tenant_id
-
-    async def test_invalid_token_fails(self, seeded_session) -> None:
-        with pytest.raises(HTTPException) as exc_info:
-            await get_authenticated_tenant(db=seeded_session, authorization="Bearer not-a-jwt")
-        assert exc_info.value.status_code == 401
-
-    async def test_malformed_token_fails(self, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        token = await _token_for(seeded_session, ctx_a.tenant_id)
-        tampered = token[:-4] + "XXXX"
-        with pytest.raises(HTTPException) as exc_info:
-            await get_authenticated_tenant(db=seeded_session, authorization=f"Bearer {tampered}")
-        assert exc_info.value.status_code == 401
-
-    async def test_expired_token_fails(self, seeded_session) -> None:
-        ctx_a, _ = await _tenants(seeded_session)
-        principal = await _tenant_principal(seeded_session, ctx_a.tenant_id)
-        expired = create_tenant_api_token(
-            principal,
-            secret=_settings().tenant_api_token_secret,
-            algorithm=_settings().tenant_api_token_algorithm,
-            issued_at=datetime.now(UTC) - timedelta(hours=2),
+        await client.post(
+            REGISTER_URL,
+            json={"email": "alice@example.com", "name": "Alice", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
         )
-        with pytest.raises(HTTPException) as exc_info:
-            await get_authenticated_tenant(db=seeded_session, authorization=f"Bearer {expired}")
-        assert exc_info.value.status_code == 401
+        login_resp = await client.post(
+            LOGIN_URL,
+            json={"email": "alice@example.com", "password": "AlicePassword123!"},
+            headers={"X-AuthX-API-Key": TENANT_A_KEY},
+        )
+        user_token = login_resp.json()["access_token"]
 
-    async def test_missing_authorization_fails(self, seeded_session) -> None:
-        with pytest.raises(HTTPException) as exc_info:
-            await get_authenticated_tenant(db=seeded_session, authorization=None)
-        assert exc_info.value.status_code == 401
+        me_resp = await client.get(ME_URL, headers={"Authorization": f"Bearer {user_token}"})
+        assert me_resp.status_code == 200
+        me_data = me_resp.json()
+        assert me_data["email"] == "alice@example.com"
+        assert UUID(me_data["tenant_id"]) == ctx_a.tenant_id
 
+    """13. Mock API keys do not work when running in production configuration."""
 
-class TestTenantIsolation:
-    async def test_x_tenant_id_cannot_switch_authenticated_tenant(
-        self, client, test_app, seeded_session
+    async def test_mock_api_keys_do_not_work_in_production(
+        self, seeded_session, monkeypatch
     ) -> None:
-        ctx_a, ctx_b = await _tenants(seeded_session)
-        token = await _token_for(seeded_session, ctx_a.tenant_id)
-
-        @test_app.get("/test/whoami")
-        async def whoami(
-            tenant: Annotated[TenantContext, Depends(get_authenticated_tenant)],
-            x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
-        ):
-            return {
-                "tenant_id": str(tenant.tenant_id),
-                "slug": tenant.slug,
-                "x_tenant_id": x_tenant_id,
-            }
-
-        response = await client.get(
-            "/test/whoami",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "X-Tenant-Id": str(ctx_b.tenant_id),
-            },
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["tenant_id"] == str(ctx_a.tenant_id)
-        assert body["slug"] == "tenant-a"
-        assert body["x_tenant_id"] == str(ctx_b.tenant_id)
-
-
-class TestCredentialStorage:
-    async def test_plaintext_password_never_stored(self, seeded_session) -> None:
-        rows = (await seeded_session.execute(select(TenantCredential))).scalars().all()
-        assert len(rows) == 2
-        for row in rows:
-            assert row.password_hash.startswith("$argon2id$")
-            assert "TenantA123!" not in row.password_hash
-            assert "TenantB123!" not in row.password_hash
+        monkeypatch.setenv("APP_ENV", "production")
+        get_settings.cache_clear()
+        try:
+            with pytest.raises(HTTPException) as exc_info:
+                await get_authenticated_tenant(db=seeded_session, x_authx_api_key=TENANT_A_KEY)
+            assert exc_info.value.status_code == 401
+        finally:
+            get_settings.cache_clear()

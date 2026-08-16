@@ -8,27 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import (
     get_authenticated_tenant,
     get_authenticated_user,
-    tenant_bearer,
+    tenant_api_key_header,
     user_bearer,
 )
 from app.auth.principal import UserContext
 from app.database.session import get_db_session
-from app.services.tenant_auth_service import TenantAuthService
 from app.services.user_auth_service import DuplicateEmailError, UserAuthService
 from app.tenants.context import TenantContext
 
 router = APIRouter(tags=["auth"])
 
 
-class TenantLoginRequest(BaseModel):
-    """Development tenant login credentials."""
-
-    email: str
-    password: str
-
-
 class TokenResponse(BaseModel):
-    """A bearer token (tenant or user)."""
+    """A bearer token (user access token)."""
 
     access_token: str
     token_type: Literal["bearer"] = "bearer"
@@ -37,7 +29,7 @@ class TokenResponse(BaseModel):
 class UserRegisterRequest(BaseModel):
     """User registration payload.
 
-    The tenant is derived from the authenticated Tenant API Token; a
+    The tenant is derived from the authenticated Tenant API Key; a
     ``tenant_id`` supplied here is intentionally ignored.
     """
 
@@ -63,35 +55,11 @@ class UserResponse(BaseModel):
     email_verified: bool
 
 
-@router.post("/auth/tenant/login", response_model=TokenResponse)
-async def tenant_login(
-    payload: TenantLoginRequest,
-    db: Annotated[AsyncSession, Depends(get_db_session)],
-) -> TokenResponse:
-    """Authenticate a development tenant and issue a Tenant API Token.
-
-    The returned token is a TENANT token, not a user token: it represents
-    an authenticated tenant and is required for tenant-level operations such
-    as user registration. Unknown tenants and wrong passwords both return
-    401 to avoid user enumeration.
-    """
-    service = TenantAuthService(db)
-    principal = await service.authenticate(payload.email, payload.password)
-    if principal is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    token = service.issue_api_token(principal)
-    return TokenResponse(access_token=token, token_type="bearer")
-
-
 @router.post(
     "/auth/users/register",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Security(tenant_bearer)],
+    dependencies=[Security(tenant_api_key_header)],
 )
 async def register_user(
     payload: UserRegisterRequest,
@@ -100,9 +68,9 @@ async def register_user(
 ) -> UserResponse:
     """Register a user inside the authenticated tenant.
 
-    Requires a valid Tenant API Token. The tenant comes ONLY from the token;
-    a ``tenant_id`` in the request body is ignored. Passwords are hashed
-    with Argon2id and never stored in plaintext.
+    Requires a valid Tenant API Key (via X-AuthX-API-Key header). The tenant
+    comes ONLY from the API key; a ``tenant_id`` in the request body is ignored.
+    Passwords are hashed with Argon2id and never stored in plaintext.
     """
     service = UserAuthService(db)
     try:
@@ -129,7 +97,7 @@ async def register_user(
 @router.post(
     "/auth/users/login",
     response_model=TokenResponse,
-    dependencies=[Security(tenant_bearer)],
+    dependencies=[Security(tenant_api_key_header)],
 )
 async def user_login(
     payload: UserLoginRequest,
@@ -138,9 +106,9 @@ async def user_login(
 ) -> TokenResponse:
     """Authenticate a user within the authenticated tenant.
 
-    Requires a valid Tenant API Token so the email lookup is scoped to one
-    tenant. On success a USER Access Token is issued — never a Tenant API
-    Token. Unknown users and wrong passwords both return 401.
+    Requires a valid Tenant API Key (via X-AuthX-API-Key header) so the email
+    lookup is scoped to one tenant. On success a USER Access Token is issued —
+    never a Tenant token. Unknown users and wrong passwords both return 401.
     """
     service = UserAuthService(db)
     principal = await service.authenticate_user(
@@ -166,7 +134,7 @@ async def users_me(
 ) -> UserResponse:
     """Return the authenticated user.
 
-    Requires a valid USER Access Token (a Tenant API Token is rejected).
+    Requires a valid USER Access Token.
     """
     return UserResponse(
         id=user.user_id,

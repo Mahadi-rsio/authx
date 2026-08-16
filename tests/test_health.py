@@ -24,7 +24,7 @@ async def test_health_openapi_documented() -> None:
     assert "/health" in paths
 
 
-async def test_openapi_declares_bearer_security_schemes() -> None:
+async def test_openapi_declares_security_schemes() -> None:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/openapi.json")
@@ -34,8 +34,9 @@ async def test_openapi_declares_bearer_security_schemes() -> None:
 
     schemes = schema["components"]["securitySchemes"]
     assert set(schemes) == {"TenantAPIKey", "UserAccessToken"}
-    assert schemes["TenantAPIKey"]["type"] == "http"
-    assert schemes["TenantAPIKey"]["scheme"] == "bearer"
+    assert schemes["TenantAPIKey"]["type"] == "apiKey"
+    assert schemes["TenantAPIKey"]["name"] == "X-AuthX-API-Key"
+    assert schemes["TenantAPIKey"]["in"] == "header"
     assert schemes["UserAccessToken"]["type"] == "http"
     assert schemes["UserAccessToken"]["scheme"] == "bearer"
 
